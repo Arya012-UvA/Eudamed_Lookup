@@ -31,10 +31,19 @@ ACTOR_PARAMS = (
 )
 REFERENCE_PARAMS = ("ID", "CODE", "LANGUAGE")
 
-# Fields a device name can appear in. Filters are exact, so searching all of
-# them is what makes a name search work: a device registered as
-# "MindDoc: Your Companion" has DEVICE_NAME "MindDoc", which matches exactly.
-DEFAULT_SEARCH_FIELDS = "TRADE_NAME,DEVICE_NAME,BASIC_UDI,PRIMARY_DI,MF_SRN"
+# The two fields a product NAME can appear in. Filters are exact, so querying
+# both is what makes a name search work: a device registered as
+# "MindDoc: Your Companion" has DEVICE_NAME "MindDoc", which matches exactly
+# where TRADE_NAME does not.
+#
+# BASIC_UDI, PRIMARY_DI and MF_SRN are identifiers, not names, so including
+# them by default would roughly triple the request count and match nothing.
+# They stay available for identifier lookups via --fields.
+DEFAULT_SEARCH_FIELDS = "TRADE_NAME,DEVICE_NAME"
+
+#: Every /udi parameter a name or identifier can be looked up through, for the
+#: UI's field picker.
+SEARCHABLE_FIELDS = ("TRADE_NAME", "DEVICE_NAME", "BASIC_UDI", "PRIMARY_DI", "MF_SRN")
 
 OPERATIONS = {
     "/udi": UDI_PARAMS,

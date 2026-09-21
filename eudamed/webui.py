@@ -560,9 +560,9 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
     <span>Search fields:</span>
     <label><input type="checkbox" class="fld" value="TRADE_NAME" checked> TRADE_NAME</label>
     <label><input type="checkbox" class="fld" value="DEVICE_NAME" checked> DEVICE_NAME</label>
-    <label><input type="checkbox" class="fld" value="BASIC_UDI" checked> BASIC_UDI</label>
-    <label><input type="checkbox" class="fld" value="PRIMARY_DI" checked> PRIMARY_DI</label>
-    <label><input type="checkbox" class="fld" value="MF_SRN" checked> MF_SRN</label>
+    <label><input type="checkbox" class="fld" value="BASIC_UDI"> BASIC_UDI</label>
+    <label><input type="checkbox" class="fld" value="PRIMARY_DI"> PRIMARY_DI</label>
+    <label><input type="checkbox" class="fld" value="MF_SRN"> MF_SRN</label>
   </div>
   <div class="optrow">
     <label>Min score <input id="min" type="number" min="0" max="1" step="0.05" value="0"

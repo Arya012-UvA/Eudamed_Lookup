@@ -262,7 +262,7 @@ MindDoc,Software for psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-00002512
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--fields` | all five name-bearing params | Which `/udi` parameters to search each term against |
+| `--fields` | `TRADE_NAME,DEVICE_NAME` | Which `/udi` parameters to search each term against. `BASIC_UDI`, `PRIMARY_DI` and `MF_SRN` are identifiers, available for lookups but not searched by default |
 | `--top` | `5` | Candidates kept per device |
 | `--min-score` | `0.0` | Discard candidates below this. Exact filters mean a floor mostly discards good matches |
 | `--format` | `json` | `json` or `csv` — the API supports both |
@@ -348,7 +348,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 250 tests
+pytest -q          # 251 tests
 ruff check eudamed tests
 ```
 
@@ -455,8 +455,8 @@ name-bearing field at once is what makes it work:
 > `DEVICE_NAME=MindDoc` matches exactly. The local scorer then sees `MindDoc`
 > inside the trade name and reports `trade_name:contains` at 0.97.
 
-That is why `--fields` defaults to all five name-bearing parameters and
-`--min-score` defaults to `0.0`: filters are exact, so a returned row is almost
+That is why `--fields` defaults to `TRADE_NAME,DEVICE_NAME` — the two columns a
+product name can appear in — and `--min-score` defaults to `0.0`: filters are exact, so a returned row is almost
 always a real hit, and a score floor mostly discards good matches. Against the
 real register this configuration finds the large majority of a 23-device list.
 
@@ -601,7 +601,7 @@ eudamed/
   cache.py        local row cache, for fuzzy matching on the datalake backend
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            250 tests, no network required
+tests/            251 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

@@ -303,10 +303,12 @@ def test_ui_target_uses_every_spelling_variant(ui_server):
     terms, not just the one string. Typing the name alone runs one query."""
     d = ui_server.json("/api/search?target=HelloBetter+Stress+und+Burnout")
     terms = [q["term"] for q in d["queries"]]
-    # One query per term per searched field, so terms repeat; order is preserved.
-    assert terms[:3] == ["HelloBetter Stress und Burnout"] * 3
+    # Two fields are searched per term, so each term appears twice; order is
+    # preserved.
+    assert terms[:2] == ["HelloBetter Stress und Burnout"] * 2
     assert set(terms) == {"HelloBetter Stress und Burnout", "HelloBetter Stress",
                           "HelloBetter"}
+    assert {q["param"] for q in d["queries"]} == {"TRADE_NAME", "DEVICE_NAME"}
 
     typed = ui_server.json("/api/search?name=HelloBetter")
     assert {q["term"] for q in typed["queries"]} == {"HelloBetter"}
@@ -860,11 +862,20 @@ def test_multi_field_search_finds_a_suffixed_trade_name(live_server, tmp_path):
         == "not found"
 
 
-def test_default_fields_cover_every_name_bearing_column():
+def test_default_fields_are_the_two_name_columns():
+    """Only TRADE_NAME and DEVICE_NAME can hold a product name. The identifier
+    fields would triple the request count and match nothing."""
     from eudamed import config
-    fields = config.DEFAULT_SEARCH_FIELDS.split(",")
-    assert fields[:2] == ["TRADE_NAME", "DEVICE_NAME"]
-    assert all(f in config.UDI_PARAMS for f in fields)
+    assert config.DEFAULT_SEARCH_FIELDS == "TRADE_NAME,DEVICE_NAME"
+    assert all(f in config.UDI_PARAMS for f in config.SEARCHABLE_FIELDS)
+
+
+def test_default_search_issues_two_requests_per_term(capsys):
+    main(["search", "--trade-name", "MindDoc", "--dry-run"])
+    urls = [u for u in capsys.readouterr().out.splitlines() if u.strip()]
+    assert len(urls) == 2
+    assert any("TRADE_NAME=MindDoc" in u for u in urls)
+    assert any("DEVICE_NAME=MindDoc" in u for u in urls)
 
 
 def test_default_min_score_keeps_every_returned_row(live_server, tmp_path):
@@ -889,6 +900,5 @@ def test_search_defaults_to_the_documented_api(capsys):
     main(["search", "--trade-name", "MindDoc", "--dry-run"])
     out = capsys.readouterr().out
     assert "api.datalake.sante.service.ec.europa.eu" in out
-    # and across every name-bearing field
-    for field in ("TRADE_NAME", "DEVICE_NAME", "BASIC_UDI", "PRIMARY_DI", "MF_SRN"):
+    for field in ("TRADE_NAME", "DEVICE_NAME"):
         assert f"{field}=MindDoc" in out
