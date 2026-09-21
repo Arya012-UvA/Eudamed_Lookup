@@ -38,7 +38,8 @@ select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF", "BLE", "C4"]
 known-first-party = ["eudamed"]
 
 [tool.ruff.lint.per-file-ignores]
-# report.py embeds the HTML report as one template string; its CSS rules and
-# JS expressions are not Python and reflowing them to 100 columns hurts
-# readability rather than helping it.
+# report.py and webui.py each embed a page as one template string; the CSS
+# rules and JS expressions inside are not Python, and reflowing them to 100
+# columns hurts readability rather than helping it.
 "eudamed/report.py" = ["E501"]
+"eudamed/webui.py" = ["E501"]

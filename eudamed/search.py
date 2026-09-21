@@ -4,7 +4,7 @@ import csv
 
 from .client import ApiError, AuthError
 from .fields import describe_keys
-from .matching import classify, score_device
+from .matching import classify, score_device, score_identifier
 from .records import Device
 
 
@@ -61,7 +61,7 @@ def _split(value):
 def search_target(client, target, reference=None, top=5, min_score=0.45,
                   fields="TRADE_NAME", keep_raw=False):
     """Run every query term for one target and rank the union of the results."""
-    seen, queries, errors, raw_keys = {}, [], [], set()
+    seen, found_via, queries, errors, raw_keys = {}, {}, [], [], set()
     param_names = [f.strip().upper() for f in fields.split(",") if f.strip()]
 
     for term in target.keys + target.broad:
@@ -86,10 +86,23 @@ def search_target(client, target, reference=None, top=5, min_score=0.45,
                 key = device.identity()
                 if key not in seen:
                     seen[key] = device
+                # Remember how each device was reached; an identifier hit is a
+                # match by construction and must not be name-scored away.
+                found_via.setdefault(key, []).append((param, term))
 
+    key_terms = set(target.keys)
     candidates = []
-    for device in seen.values():
+    for key, device in seen.items():
         value, matched_on = score_device(target.keys, target.country, device)
+        # Only terms from `keys` may claim an identifier match. A `broad` term
+        # is a recall helper, so an SRN listed there must not turn every device
+        # from that manufacturer into a full-confidence hit.
+        for param, term in found_via.get(key, ()):
+            if term not in key_terms:
+                continue
+            hit = score_identifier(param, term, device)
+            if hit and hit[0] > value:
+                value, matched_on = hit
         if value < min_score:
             continue
         entry = device.to_dict()

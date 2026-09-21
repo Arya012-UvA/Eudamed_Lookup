@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 
 from . import config
 from .client import ApiError, AuthError, Client
@@ -261,6 +262,32 @@ def cmd_probe(args):
     return EXIT_ERROR if failures else EXIT_OK
 
 
+# ----------------------------------------------------------------- serve
+def cmd_serve(args):
+    """Run the local web UI."""
+    from .webui import serve as make_server
+
+    client = make_client(args)
+    if not require_key(client, args):
+        return EXIT_AUTH
+
+    server = make_server(client, port=args.port, host=args.host, verbose=args.verbose)
+    url = f"http://{args.host}:{args.port}"
+    log(f"EUDAMED search UI on {url}")
+    log(f"  querying {client.base}")
+    log("  press Ctrl-C to stop")
+    if args.open_browser:
+        import webbrowser
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log("stopped")
+    finally:
+        server.server_close()
+    return EXIT_OK
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="eudamed",
@@ -315,6 +342,15 @@ def build_parser():
     probe.add_argument("--raw-dir", help="save raw response bodies here")
     add_common(probe)
     probe.set_defaults(func=cmd_probe)
+
+    ui = subs.add_parser(
+        "serve", help="open a local web UI to search any name interactively")
+    ui.add_argument("--port", type=int, default=8100)
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--no-open", dest="open_browser", action="store_false",
+                    help="do not open a browser automatically")
+    add_common(ui)
+    ui.set_defaults(func=cmd_serve)
 
     return parser
 

@@ -62,7 +62,8 @@ def client_factory():
 def live_server():
     """The bundled fake API on a real socket, for end-to-end tests."""
     server = fakeserver.serve(port=0, require_key=True)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                              daemon=True)
     thread.start()
     host, port = server.server_address[:2]
     yield f"http://{host}:{port}/eudamed"
@@ -80,3 +81,50 @@ def devices_csv(tmp_path):
         "NotRegistered,invented,XX,DE,ZZZNotARealDevice,\n",
         encoding="utf-8")
     return str(path)
+
+
+class UIClient:
+    """Tiny HTTP helper for the local web UI under test."""
+
+    def __init__(self, base):
+        self.base = base
+
+    def _open(self, path):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
+    def status(self, path):
+        return self._open(path)[0]
+
+    def text(self, path):
+        return self._open(path)[1]
+
+    def json(self, path):
+        return json.loads(self._open(path)[1])
+
+
+@pytest.fixture(scope="session")
+def ui_server(live_server):
+    """The web UI on an ephemeral port, backed by the fake API.
+
+    Session-scoped: the handler keeps no per-request state, and
+    ThreadingHTTPServer.shutdown() costs one poll interval, so a fresh server
+    per test would add that to every one of them.
+    """
+    from eudamed.webui import serve as make_ui
+
+    client = Client(base=live_server, key="dummy", delay=0, backoff_base=0)
+    server = make_ui(client, port=0)
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        yield UIClient(f"http://{host}:{port}")
+    finally:
+        server.shutdown()
+        server.server_close()

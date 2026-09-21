@@ -186,3 +186,70 @@ def test_ambiguous_reference_ids_are_left_unresolved(live_server, client_factory
     assert ref.ambiguous[99] == ["AMBIGUOUS_A", "AMBIGUOUS_B"]
     assert ref.label(99) == "99"             # raw id, not a guess
     assert ref.label(2) == "CLASS_IIA"       # unambiguous ids still resolve
+
+
+# --- web UI -------------------------------------------------------------
+def test_ui_serves_the_page_and_health(ui_server):
+    html = ui_server.text("/")
+    assert "<title>EUDAMED Search</title>" in html
+    assert "__DATA__" not in html
+    health = ui_server.json("/api/health")
+    assert health["has_key"] is True
+    assert health["thresholds"]["found"] == 0.85
+    assert "TRADE_NAME" in health["udi_params"]
+
+
+def test_ui_search_by_name(ui_server):
+    d = ui_server.json("/api/search?name=MindDoc&country=DE")
+    assert d["status"] == "found"
+    assert d["candidates"][0]["matched_on"] == "trade_name:exact"
+    assert d["candidates"][0]["risk_class"] == "CLASS_IIA"
+    # Every code resolved here, so no ambiguity banner should be attached even
+    # though the reference table does contain an ambiguous id.
+    assert "reference_ambiguous" not in d
+
+
+def test_ui_search_by_identifier(ui_server):
+    """An SRN typed into the box is an identifier match, not a name comparison."""
+    d = ui_server.json("/api/search?name=DE-MF-000025123&fields=MF_SRN")
+    assert d["status"] == "found"
+    assert len(d["candidates"]) == 2
+    assert all(c["matched_on"] == "identifier:MF_SRN" for c in d["candidates"])
+
+
+def test_ui_search_by_udi_di(ui_server):
+    d = ui_server.json("/api/search?name=04260703120019&fields=PRIMARY_DI")
+    assert d["status"] == "found"
+    assert d["candidates"][0]["matched_on"] == "identifier:PRIMARY_DI"
+
+
+def test_ui_not_found(ui_server):
+    d = ui_server.json("/api/search?name=ZZZNotARealDevice")
+    assert d["status"] == "not found" and d["candidates"] == []
+
+
+@pytest.mark.parametrize("path,code", [
+    ("/api/search?name=", 400),
+    ("/api/search?name=X&fields=tradeName", 400),
+    ("/api/search?name=X&fields=page", 400),
+    ("/api/nope", 404),
+])
+def test_ui_rejects_bad_input(ui_server, path, code):
+    assert ui_server.status(path) == code
+
+
+def test_ui_actors(ui_server):
+    d = ui_server.json("/api/actors?name=MindDoc")
+    assert d["actors"][0]["actor_id"] == "DE-MF-000025123"
+
+
+def test_ui_serves_a_favicon(ui_server):
+    assert "<svg" in ui_server.text("/favicon.svg")
+    assert ui_server.status("/favicon.ico") == 204
+
+
+def test_ui_never_exposes_the_key(ui_server):
+    """The key lives server side; it must not reach the page or any response."""
+    assert "dummy" not in ui_server.text("/")
+    assert "dummy" not in json.dumps(ui_server.json("/api/health"))
+    assert "dummy" not in json.dumps(ui_server.json("/api/search?name=MindDoc"))

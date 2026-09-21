@@ -65,6 +65,27 @@ If it reports fields it could not resolve, add the real spellings to
 `Device.__init__` in [`eudamed/records.py`](eudamed/records.py) — that is the
 only place field names live.
 
+### `serve` — interactive web UI
+
+A search box where you can check **any** name, one at a time, without preparing
+a CSV. The subscription key stays in this process and is never sent to the
+browser, which also sidesteps the CORS restrictions that block calling the API
+directly from a page.
+
+```bash
+python3 -m eudamed serve --key YOUR_KEY
+# EUDAMED search UI on http://127.0.0.1:8100
+```
+
+It opens your browser automatically (`--no-open` to suppress, `--port` to
+change the port). Type a name, pick an expected country, press Search. Under
+**Options** you can choose which `/udi` fields to search, adjust the minimum
+score and the result count, and turn off `/reference` code resolution.
+
+Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated as
+an identifier match rather than a name comparison, so pasting an SRN lists
+every device that manufacturer has registered.
+
 ### `search` — the main command
 
 ```bash
@@ -89,6 +110,13 @@ Outputs land in `--out` (default `eudamed_results/`):
 ```bash
 python3 -m eudamed actors --name "MindDoc Health" --country DE
 python3 -m eudamed reference --language en --out reference.json
+```
+
+`devices.csv` in the repository root holds 23 German/EU digital-health devices
+ready to run:
+
+```bash
+python3 -m eudamed search --input devices.csv --out results --fields TRADE_NAME,DEVICE_NAME
 ```
 
 ### Input CSV format
@@ -142,10 +170,22 @@ carries the evidence that produced it** (`matched_on`):
 | `trade_name:contained_by` — trade name inside the key | `0.80` |
 | `device_name:*` | trade-name score × `0.9` |
 | `trade_name:fuzzy` | `0.85 ×` best of fuzzy ratio / token overlap, capped `0.84` |
+| `identifier:<PARAM>` | `1.00` exact, `0.95` partial — see below |
 | `manufacturer` | capped at **`0.55`** |
 
 Then `+0.05` if the manufacturer SRN country matches `country`, `-0.10` if it
 conflicts. Buckets: **found** ≥ 0.85, **possible** ≥ 0.60, else **not found**.
+
+### Identifier searches are not name comparisons
+
+When a term is matched against an identifier field (`PRIMARY_DI`, `BASIC_UDI`,
+`MF_SRN`, `REFERENCE`, `NOMENCLATURE_CODE`), the API has already matched it —
+so scoring the row's *name* against that identifier would give near zero and
+discard a correct hit. Such rows score as `identifier:<PARAM>` instead.
+
+This applies only to terms in `keys`. An identifier in `broad` stays a recall
+helper, so putting an SRN there does not turn every device from that
+manufacturer into a full-confidence match.
 
 ### Why manufacturer evidence is capped
 
@@ -169,7 +209,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 137 tests
+pytest -q          # 154 tests
 ruff check eudamed tests
 ```
 
@@ -206,6 +246,16 @@ The fixture deliberately includes `Moodpath` — same manufacturer as `MindDoc`,
 different trade name — so you can see the manufacturer-only lead being capped
 rather than reported as found. Expect `MindDoc` at `1.0 trade_name:exact` and
 `Moodpath` at `0.55 manufacturer`.
+
+And the interactive UI against the same stand-in:
+
+```bash
+# terminal 2, with the fake API still running in terminal 1
+python3 -m eudamed serve --base $BASE --key dummy
+```
+
+Try `MindDoc` (found), `velibra` (not found), and — with `MF_SRN` ticked under
+Options — `DE-MF-000025123`, which lists both of that manufacturer's devices.
 
 Checks that need no server at all:
 
@@ -266,9 +316,10 @@ eudamed/
   matching.py     normalisation and typed-evidence scoring
   search.py       orchestration: targets -> ranked candidates
   report.py       JSON / CSV / HTML writers
-  cli.py          argparse CLI: search, actors, reference, probe
+  cli.py          argparse CLI: search, actors, reference, probe, serve
+  webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            137 tests, no network required
+tests/            154 tests, no network required
 docs/             vendored OpenAPI document
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

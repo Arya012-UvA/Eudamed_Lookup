@@ -30,6 +30,18 @@ FUZZY_CAP = 0.84       # a fuzzy trade-name match alone never reaches FOUND
 COUNTRY_MATCH_BONUS = 0.05
 COUNTRY_CONFLICT_PENALTY = 0.10
 
+# /udi parameters that identify a device rather than name it, mapped to the
+# Device attribute they filter on. A hit found through one of these is a match
+# by construction - the API already matched the identifier - so it must not be
+# re-scored for name similarity, which would score near zero and discard it.
+IDENTIFIER_PARAMS = {
+    "PRIMARY_DI": "primary_di",
+    "BASIC_UDI": "basic_udi",
+    "MF_SRN": "mf_srn",
+    "REFERENCE": "reference",
+    "NOMENCLATURE_CODE": "nomenclature_code",
+}
+
 
 def norm(value):
     """Lowercase, strip accents, collapse punctuation to single spaces."""
@@ -100,6 +112,25 @@ def score_device(keys, expected_country, device):
 
     ceiling = MANUFACTURER_CAP if matched_on == "manufacturer" else 1.0
     return round(max(0.0, min(ceiling, best)), 3), matched_on
+
+
+def score_identifier(param, term, device):
+    """Score a hit that was found by querying an identifier field.
+
+    Returns (score, matched_on) or None when the identifier does not actually
+    appear in the row - which would mean the API matched on something else.
+    """
+    attr = IDENTIFIER_PARAMS.get(param)
+    if not attr:
+        return None
+    actual, wanted = squash(getattr(device, attr, "")), squash(term)
+    if not actual or not wanted:
+        return None
+    if actual == wanted:
+        return 1.0, f"identifier:{param}"
+    if wanted in actual or actual in wanted:
+        return 0.95, f"identifier:{param}"
+    return None
 
 
 def classify(score):

@@ -218,3 +218,24 @@ def test_html_is_valid_without_candidates(tmp_path, client_factory):
     paths = write_all(_results(client_factory), str(tmp_path / "out"))
     html = Path(paths["html"]).read_text(encoding="utf-8")
     assert "__DATA__" not in html and "__META__" not in html
+
+
+def test_identifier_key_term_scores_as_a_match(client_factory):
+    """An SRN typed as the search term itself is an identifier match."""
+    client = client_factory(opener=json_opener(ROWS))
+    result = search_target(client, Target("DE-MF-1", keys=["DE-MF-1"]), fields="MF_SRN")
+    assert result["status"] == "found"
+    assert all(c["matched_on"] == "identifier:MF_SRN" for c in result["candidates"])
+    assert len(result["candidates"]) == 2
+
+
+def test_identifier_in_broad_does_not_become_a_match(client_factory):
+    """A `broad` term is a recall helper. An SRN there must not turn every
+    device from that manufacturer into a full-confidence hit."""
+    client = client_factory(opener=json_opener(ROWS))
+    result = search_target(client, Target("MindDoc", country="DE", keys=["MindDoc"],
+                                          broad=["DE-MF-1"]), fields="TRADE_NAME,MF_SRN")
+    by_name = {c["trade_name"]: c for c in result["candidates"]}
+    assert by_name["MindDoc"]["matched_on"] == "trade_name:exact"
+    assert by_name["Moodpath"]["matched_on"] == "manufacturer"
+    assert by_name["Moodpath"]["score"] < 0.6

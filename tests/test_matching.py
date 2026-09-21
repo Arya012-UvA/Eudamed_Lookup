@@ -115,3 +115,32 @@ def test_score_always_within_bounds():
             device = dev(trade="MindDoc", mfr="MindDoc", srn="DE-MF-1")
             score, _ = score_device(keys, country, device)
             assert 0.0 <= score <= 1.0
+
+
+# --- identifier searches ------------------------------------------------
+def test_identifier_hit_is_a_match_not_a_name_comparison():
+    """Searching MF_SRN / PRIMARY_DI / BASIC_UDI returns rows the API already
+    matched. Scoring those against the identifier as if it were a name gives
+    near-zero and discards a correct hit."""
+    from eudamed.matching import score_identifier
+    device = Device({"TRADE_NAME": "Moodpath", "MF_SRN": "DE-MF-000025123",
+                     "PRIMARY_DI": "04260703120019", "BASIC_UDI": "426070312MOODPATH1"})
+    assert score_identifier("MF_SRN", "DE-MF-000025123", device) == (1.0, "identifier:MF_SRN")
+    assert score_identifier("PRIMARY_DI", "04260703120019", device)[0] == 1.0
+    # A partial identifier still counts, slightly lower.
+    assert score_identifier("MF_SRN", "DE-MF-0000251", device) == (0.95, "identifier:MF_SRN")
+
+
+def test_identifier_scoring_rejects_a_non_match():
+    from eudamed.matching import score_identifier
+    device = Device({"MF_SRN": "DE-MF-000025123"})
+    assert score_identifier("MF_SRN", "CZ-MF-999", device) is None
+    assert score_identifier("MF_SRN", "", device) is None
+    assert score_identifier("PRIMARY_DI", "123", device) is None     # field empty
+
+
+def test_name_params_are_not_identifier_params():
+    from eudamed.matching import score_identifier
+    device = Device({"TRADE_NAME": "MindDoc"})
+    assert score_identifier("TRADE_NAME", "MindDoc", device) is None
+    assert score_identifier("DEVICE_NAME", "MindDoc", device) is None
