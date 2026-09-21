@@ -1,96 +1,281 @@
 # Eudamed_Lookup
 
-Searches the EU [EUDAMED](https://ec.europa.eu/tools/eudamed) device database for a
-list of devices by trade name, scores each hit against the name you were looking for,
-and writes a JSON, CSV and standalone HTML report.
+Command-line application for the **official EUDAMED Public API v1.0**
+(`api.datalake.sante.service.ec.europa.eu/eudamed`). Give it a list of medical
+device names; it tells you which are registered in EUDAMED, under which
+manufacturer, risk class and legislation, and writes a JSON, CSV and
+self-contained HTML report.
 
-Built for the case where you have a spreadsheet of device names (e.g. reimbursable
-digital health applications) and need to know which of them are actually registered
-in EUDAMED, under which manufacturer, risk class and legislation.
+Built against the OpenAPI document vendored at
+[`docs/eudamed-public-openapi-v1.0.json`](docs/eudamed-public-openapi-v1.0.json).
+
+```
+python3 -m eudamed search --trade-name MindDoc --country DE
+```
 
 ## Requirements
 
-Python 3.9+. No third-party runtime dependencies — standard library only.
-Running the tests needs `pytest`.
+- Python 3.9+
+- **No third-party runtime dependencies** — standard library only
+- A **subscription key** for the live API (see below). Tests and the bundled
+  fake server need no key.
 
-## Usage
-
-Search the built-in device list (23 mostly German DiGA-style devices):
+## Install
 
 ```bash
-python3 eudamed_lookup.py
+git clone https://github.com/Arya012-UvA/Eudamed_Lookup.git
+cd Eudamed_Lookup
+pip install -e ".[dev]"     # optional; or just run python3 -m eudamed
 ```
 
-Search your own list:
+## Getting a subscription key
+
+The API is published through Azure API Management. The OpenAPI document
+declares two credential schemes, and both are supported:
+
+| Scheme | How it is sent | Flag |
+| --- | --- | --- |
+| `apiKeyHeader` | `Ocp-Apim-Subscription-Key` header | `--auth-mode header` (default) |
+| `apiKeyQuery` | `subscription-key` query parameter | `--auth-mode query` |
+
+Register at <https://developer.datalake.sante.service.ec.europa.eu> and
+subscribe to *API - EUDAMED Public*. Then:
 
 ```bash
-python3 eudamed_lookup.py --input devices.example.csv --out results
+export EUDAMED_SUBSCRIPTION_KEY=your-key-here
+```
+
+Keys are never printed: they are redacted to `<key>` in all log and error output.
+
+## Commands
+
+### `probe` — run this first
+
+The OpenAPI document declares **no response schemas** (every `200` is
+`{"description": ""}`), so the field names in a response are unknown until you
+make a real call. `probe` makes one call per operation and reports the actual
+field names, whether the record mapping resolved them, and optionally saves the
+raw bodies.
+
+```bash
+python3 -m eudamed probe --trade-name MindDoc --raw-dir raw/
+```
+
+If it reports fields it could not resolve, add the real spellings to
+`Device.__init__` in [`eudamed/records.py`](eudamed/records.py) — that is the
+only place field names live.
+
+### `search` — the main command
+
+```bash
+# one device
+python3 -m eudamed search --trade-name MindDoc --country DE
+
+# a list, searching both trade name and device name
+python3 -m eudamed search --input devices.example.csv --out results \
+    --fields TRADE_NAME,DEVICE_NAME
 ```
 
 Outputs land in `--out` (default `eudamed_results/`):
 
 | File | Contents |
 | --- | --- |
-| `results.json` | Full result per device: every candidate, every query run, every error |
+| `results.json` | Everything: all candidates, every query, every error, run metadata |
 | `results.csv` | One row per device — the best match, flattened |
-| `report.html` | Self-contained browsable report; click a row to expand all candidates |
+| `report.html` | Browsable report; click a row for all candidates. No network needed to view |
+
+### `actors`, `reference`
+
+```bash
+python3 -m eudamed actors --name "MindDoc Health" --country DE
+python3 -m eudamed reference --language en --out reference.json
+```
 
 ### Input CSV format
 
+Only `name` is required. Headers are case- and space-insensitive, and a UTF-8 BOM is fine.
+
 ```csv
 name,description,ca,country,keys,broad
-deprexis,Software for depression,Hamburg DE,DE,deprexis|Deprexis 2,GAIA
+MindDoc,Software for psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-000025123
 ```
 
-- `name` — the device as you know it; used as the report label and as a fallback search key
-- `description`, `ca` — free text, carried through to the report
-- `country` — ISO2 code of the expected manufacturer; matching SRN prefix adds to the
-  score, a conflicting one subtracts
-- `keys` — `|`-separated precise search terms (spelling variants)
-- `broad` — `|`-separated wider terms (e.g. manufacturer name), searched for recall
+| Column | Meaning |
+| --- | --- |
+| `name` | The device as you know it. Report label, and fallback search key |
+| `description`, `ca` | Free text, carried through to the report |
+| `country` | Expected manufacturer ISO2. A matching SRN prefix adds to the score, a conflicting one subtracts |
+| `keys` | `\|`-separated precise search terms (spelling variants). **Only these are scored** |
+| `broad` | `\|`-separated wider terms (e.g. an SRN) — searched for recall, not scored |
 
-### Options
+### Key options
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--input` | built-in list | Input CSV |
-| `--out` | `eudamed_results` | Output directory |
-| `--no-details` | off | Skip the per-device detail and basic-UDI calls (much faster, fewer fields) |
-| `--delay` | `0.8` | Seconds to wait before each request |
+| `--fields` | `TRADE_NAME` | Which `/udi` parameters to search each term against |
+| `--top` | `5` | Candidates kept per device |
+| `--min-score` | `0.45` | Discard candidates below this |
+| `--format` | `json` | `json` or `csv` — the API supports both |
+| `--auth-mode` | `header` | Where to put the subscription key |
+| `--no-resolve-codes` | off | Skip the `/reference` call that turns numeric ids into codes |
+| `--dry-run` | off | Print the URLs that would be requested, then exit. Needs no key |
+| `--delay` | `0.2` | Minimum seconds between requests |
 | `--retries` | `4` | Attempts per request, with exponential backoff |
-| `--timeout` | `60` | Per-request timeout in seconds |
-| `--page-size` | `100` | Results per search page |
-| `--max-pages` | `3` | Maximum pages to walk per search term |
-| `--top` | `5` | Candidates to keep per device |
-| `--min-score` | `0.45` | Discard candidates scoring below this |
-| `--verbose` | off | Log every request to stderr |
+| `--keep-raw` | off | Include each raw API row in `results.json` |
+| `-v` | off | Log every request |
 
-`EUDAMED_BASE` overrides the API base URL.
+`--fields` only accepts parameters the spec documents for `/udi`; anything else
+is rejected locally with the valid list, rather than being silently dropped by
+the gateway.
+
+Exit codes: `0` ok, `1` error, `2` auth problem, `3` usage problem.
 
 ## How matching works
 
-Each candidate is scored 0–1 against the device's `keys`:
+Every candidate is scored 0–1 against the device's `keys`, and **each score
+carries the evidence that produced it** (`matched_on`):
 
-| Condition | Score |
+| Evidence | Score |
 | --- | --- |
-| Trade name equals the key (punctuation/case/accents ignored) | `1.00` |
-| Key appears inside the trade name | `0.92` |
-| Trade name appears inside the key | `0.80` |
-| Otherwise | `0.85 ×` best of fuzzy ratio / token overlap |
+| `trade_name:exact` | `1.00` |
+| `trade_name:contains` — key inside the trade name | `0.92` |
+| `trade_name:contained_by` — trade name inside the key | `0.80` |
+| `device_name:*` | trade-name score × `0.9` |
+| `trade_name:fuzzy` | `0.85 ×` best of fuzzy ratio / token overlap, capped `0.84` |
+| `manufacturer` | capped at **`0.55`** |
 
-Then `+0.05` if the manufacturer SRN country matches `country`, `-0.10` if it conflicts.
-The result is bucketed: `found` at ≥0.85, `possible` at ≥0.60, else `not found`.
+Then `+0.05` if the manufacturer SRN country matches `country`, `-0.10` if it
+conflicts. Buckets: **found** ≥ 0.85, **possible** ≥ 0.60, else **not found**.
 
-Scores are a ranking aid, not a verdict — always confirm a match via the EUDAMED
-link in the report before relying on it.
+### Why manufacturer evidence is capped
 
-## Tests
+A device whose *manufacturer* is named after the product would otherwise be
+reported as a confident match. Searching `MindDoc` matched the unrelated device
+`Moodpath` at 0.90 (`found`) in the predecessor script, because the manufacturer
+is `MindDoc Health GmbH` — so a device that is not on the register was reported
+as registered.
+
+Manufacturer-name evidence is now hard-capped below the `possible` threshold and
+cannot be lifted over it by the country bonus. Such candidates still appear —
+they are genuine leads — flagged `manufacturer` in the CSV, chipped and
+warning-boxed in the HTML report, and listed in the run summary. They are never
+counted as matches.
+
+**Scores rank candidates; they do not confirm registration.** Always open the
+EUDAMED link before relying on a match.
+
+## Testing
+
+### 1. The offline suite — no key, no network
 
 ```bash
-pytest test_eudamed_lookup.py
+pytest -q          # 137 tests
+ruff check eudamed tests
 ```
 
-22 tests cover the scoring and normalisation helpers, the HTTP client's retry and
-pagination behaviour, CSV loading, error handling, and the JSON/CSV/HTML writers
-(including HTML injection escaping). The HTTP layer is mocked, so the suite needs
-no network access.
+Covers spec conformance (required `format`, `api-version`, `Content-Type`, both
+credential schemes, rejection of undocumented parameters), retry and backoff
+behaviour, auth handling, response-shape tolerance, scoring — including the
+manufacturer-cap regression — CSV input parsing, and all three writers
+including HTML injection escaping.
+
+### 2. End to end against the bundled fake API
+
+The repo ships a stand-in that enforces the parts of the contract the spec does
+pin down — the required `format`, the subscription key, SCREAMING_SNAKE
+parameters, all three operations, JSON and CSV. This is the way to exercise the
+whole stack without a key.
+
+```bash
+# terminal 1
+python3 -m eudamed.fakeserver
+# Fake EUDAMED Public API on http://127.0.0.1:8099/eudamed
+
+# terminal 2
+BASE=http://127.0.0.1:8099/eudamed
+
+python3 -m eudamed probe  --base $BASE --key dummy --trade-name MindDoc
+python3 -m eudamed search --base $BASE --key dummy --trade-name MindDoc --country DE --out /tmp/res
+python3 -m eudamed actors --base $BASE --key dummy --name MindDoc
+python3 -m eudamed search --base $BASE --key dummy --input devices.example.csv \
+        --out /tmp/res2 --fields TRADE_NAME,MF_SRN
+open /tmp/res2/report.html
+```
+
+The fixture deliberately includes `Moodpath` — same manufacturer as `MindDoc`,
+different trade name — so you can see the manufacturer-only lead being capped
+rather than reported as found. Expect `MindDoc` at `1.0 trade_name:exact` and
+`Moodpath` at `0.55 manufacturer`.
+
+Checks that need no server at all:
+
+```bash
+python3 -m eudamed search --trade-name MindDoc --dry-run     # prints the exact URL
+python3 -m eudamed search --trade-name X --fields tradeName  # rejects UI-API spelling
+```
+
+### 3. Against the live API
+
+```bash
+export EUDAMED_SUBSCRIPTION_KEY=your-key
+python3 -m eudamed probe --trade-name MindDoc --raw-dir raw/ -v
+```
+
+Check the reported `/udi` field names against `Device.__init__`, then:
+
+```bash
+python3 -m eudamed search --input devices.example.csv --out results -v
+```
+
+## Known gaps in the API documentation
+
+These are properties of the published spec, not of this tool:
+
+1. **No response schemas.** Every `200` is `{"description": ""}`, so response
+   field names are unverified. Handled by matching field names on a normalised
+   key (`TRADE_NAME` ≡ `tradeName` ≡ `trade_name`) and by `probe`.
+2. **No pagination, anywhere.** No `page`, `pageSize`, `limit` or `offset` on any
+   operation. How the API caps large result sets is unknown; a broad search may
+   be silently truncated. `results.json` records the row count per query so a
+   suspicious round number is visible.
+3. **`/reference` has no code-table column.** Only `ID`, `CODE`, `LANGUAGE`. If
+   risk-class id 1 and legislation id 1 are different things, a flat `ID → CODE`
+   map mislabels fields. This tool therefore **refuses to resolve an id that maps
+   to more than one code**, reports the ambiguity, and shows the numeric id
+   instead of guessing.
+4. **`api-version` is undeclared** as a parameter, though the portal's own
+   request template requires it and `servers.url` is unversioned. Sent by
+   default; `--api-version ''` omits it.
+5. **No `UUID` is guaranteed.** The EUDAMED device screen needs one for a deep
+   link, so when a row has none the report falls back to a UDI-DI search link
+   rather than emitting a broken URL.
+6. **Only `500` is documented** besides `200`. Error handling is therefore
+   defensive: `401`/`403` fail fast with a key-specific message, `400`/`404`
+   fail without retrying, `408`/`429`/`5xx` retry with backoff and honour
+   `Retry-After`.
+
+## Layout
+
+```
+eudamed/
+  config.py       spec facts: base URL, operations, documented parameters, auth schemes
+  client.py       HTTP: auth, required params, retries, error classification
+  fields.py       shape-tolerant response access (unknown schemas)
+  records.py      Device / Actor mapping   <- field-name spellings live here
+  reference.py    /reference id -> code resolution, ambiguity-safe
+  matching.py     normalisation and typed-evidence scoring
+  search.py       orchestration: targets -> ranked candidates
+  report.py       JSON / CSV / HTML writers
+  cli.py          argparse CLI: search, actors, reference, probe
+  fakeserver.py   local stand-in for testing without a key
+tests/            137 tests, no network required
+docs/             vendored OpenAPI document
+legacy/           the original UI-backend script (see legacy/README.md)
+```
+
+## Legacy script
+
+The original single-file `eudamed_lookup.py` now lives in
+[`legacy/`](legacy/README.md). It calls the undocumented EUDAMED **web-UI
+backend** rather than this API, needs no key, and has the manufacturer
+false-positive described above. Kept for reference and for the no-key case.

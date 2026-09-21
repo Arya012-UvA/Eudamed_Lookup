@@ -1,4 +1,7 @@
 name,description,ca,country,keys,broad
+MindDoc,Software for patients with psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-000025123
+Kalmeda,Software for patients with tinnitus,North Rhine-Westfalia DE,DE,Kalmeda,
 deprexis,Software for patients with depression,Hamburg DE,DE,deprexis,
-Kranus Edera,Software for patients with erectile dysfunction,Bavaria DE,DE,Kranus Edera|Edera,Kranus
-i.s.h. med,Hospital information system,NL,NL,i.s.h.med|i.s.h. med|ish med,ishmed
+Kranus Edera,Software for patients with erectile dysfunction,Bavaria DE,DE,Kranus Edera|Edera,
+i.s.h. med,Hospital information system,NL,NL,i.s.h.med|i.s.h. med|ish med,
+Vitadio,Software for patients with chronic diseases,CZ,CZ,Vitadio,
