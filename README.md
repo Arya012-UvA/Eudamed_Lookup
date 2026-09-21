@@ -134,19 +134,6 @@ Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated
 an identifier match rather than a name comparison, so pasting an SRN lists
 every device that manufacturer has registered.
 
-**Local cache panel.** Because `/udi` filters are exact-match, a live name
-search returns nothing for a near-miss — and the page says so rather than
-letting it read as "not registered". Pick a partition field, press **Build
-cache**, and tick **Match against cache**; approximate names then match
-locally. An incomplete cache (any partition truncated at 1000 rows) is flagged,
-and a "not found" against it is explicitly not treated as evidence of absence.
-
-Preload a cache built by `scan` so it works from the first request:
-
-```bash
-python3 -m eudamed serve --input devices.csv --cache cache/udi.jsonl
-```
-
 **Downloads.** After any search a download bar offers `report.md`, `results.csv`
 and `results.json` for that device, plus the whole loaded list as Markdown.
 These are produced by the same writers the CLI uses, so a document downloaded
@@ -348,7 +335,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 251 tests
+pytest -q          # 234 tests
 ruff check eudamed tests
 ```
 
@@ -496,22 +483,20 @@ prefer it for name searches. `TRADE_NAME=MindDoc` returns nothing whether or not
 register, so a plain name search cannot distinguish "not registered" from
 "registered under a different string".
 
-Fuzzy matching therefore cannot work server-side — there is nothing to score,
-because the exact filter returned no rows. Use `scan` to cache rows locally and
-`search --cache` to match against them:
+Two things make a name search work anyway:
 
-```bash
-python3 -m eudamed scan --out cache/udi.jsonl --partition-by RISK_CLASS_ID
-python3 -m eudamed search --input devices.csv --cache cache/udi.jsonl --out results
-```
+1. **Both name columns are queried.** A device registered as
+   `MindDoc: Your Companion` has `DEVICE_NAME` `MindDoc`, so the device-name
+   filter matches exactly where the trade-name filter does not. The local
+   scorer then recognises the trade name and reports `trade_name:contains`.
+2. **No score floor.** Exact filters mean a returned row is almost always a
+   real hit.
 
-`scan` fetches one request per partition and de-duplicates by UUID / UDI-DI /
-Basic UDI-DI. Any partition that comes back at exactly 1000 rows is recorded as
-truncated, and both `scan` and `search --cache` say so — a cache built from
-truncated partitions **cannot** support a conclusion that a device is absent.
+Against the real register that finds the large majority of a 23-device list.
+For the remainder, `--backend ui` does genuine substring search.
 
-If you know a device's exact trade name, UDI-DI or Basic UDI-DI, query it
-directly instead; those are exact identifiers and need no cache.
+If you know a device's exact trade name, UDI-DI or Basic UDI-DI, query that
+directly; those are exact identifiers.
 
 ### A server-side defect in `$filter`
 
@@ -596,12 +581,11 @@ eudamed/
   search.py       orchestration: targets -> ranked candidates
   report.py       JSON / CSV / HTML writers
   cli.py          argparse CLI: search, actors, reference, probe, serve,
-                  filtertest, discover, raw, scan
+                  filtertest, discover, raw
   ui_backend.py   the EUDAMED website's backend: substring search, paginated
-  cache.py        local row cache, for fuzzy matching on the datalake backend
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            251 tests, no network required
+tests/            234 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

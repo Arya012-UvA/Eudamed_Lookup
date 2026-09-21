@@ -136,59 +136,6 @@ def search_target(client, target, reference=None, top=5, min_score=0.45,
     }
 
 
-def match_cached(devices, target, top=5, min_score=0.45, keep_raw=False):
-    """Match one target against locally held devices.
-
-    This is where fuzzy matching belongs for this API: /udi filters are exact,
-    so a server-side query for an approximate name returns nothing and there is
-    nothing to score. Rows have to be held locally first.
-    """
-    candidates = []
-    for device in devices:
-        value, matched_on = score_device(target.keys, target.country, device)
-        if value < min_score:
-            continue
-        entry = device.to_dict()
-        entry["score"] = value
-        entry["matched_on"] = matched_on
-        if keep_raw:
-            entry["raw"] = device.raw
-        candidates.append(entry)
-
-    candidates.sort(key=lambda c: (-c["score"], c["matched_on"] == "manufacturer",
-                                   c["latest_version"] is False, c["trade_name"]))
-    candidates = candidates[:top]
-    return {
-        **target.to_dict(),
-        "status": classify(candidates[0]["score"]) if candidates else STATUS_NOT_FOUND,
-        "candidates": candidates,
-        "queries": [{"param": "local cache", "term": ", ".join(target.keys),
-                     "rows": len(devices), "error": None}],
-        "errors": [],
-        "response_fields": [],
-        "total_matches": len(candidates),
-    }
-
-
-def run_cached(devices, targets, top=5, min_score=0.45, keep_raw=False, progress=None):
-    devices = list(devices)
-    results = []
-    for target in targets:
-        if progress:
-            progress(target.name)
-        result = match_cached(devices, target, top=top, min_score=min_score,
-                              keep_raw=keep_raw)
-        results.append(result)
-        if progress:
-            best = result["candidates"][0] if result["candidates"] else None
-            detail = ""
-            if best:
-                detail = (f" (best: {best['trade_name']!r} {best['score']} "
-                          f"via {best['matched_on']})")
-            progress(f"  -> {result['status']}{detail}", indent=True)
-    return results
-
-
 def run(client, targets, reference=None, top=5, min_score=0.45,
         fields="TRADE_NAME", keep_raw=False, progress=None):
     results = []

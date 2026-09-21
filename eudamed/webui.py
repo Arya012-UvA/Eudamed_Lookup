@@ -21,27 +21,21 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import config
-from .cache import RowCache
 from .client import ApiError, AuthError
 from .matching import FOUND, POSSIBLE
 from .records import Actor, Device
 from .reference import Reference
 from .report import safe_json, write_csv, write_markdown
-from .search import Target, match_cached, search_target
+from .search import Target, search_target
 
 
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, handler, client, verbose=False, targets=None,
-                 cache=None):
+    def __init__(self, address, handler, client, verbose=False, targets=None):
         super().__init__(address, handler)
         self.client = client
         self.verbose = verbose
-        # /udi filters are exact-match, so an approximate name can only be
-        # matched against locally held rows.
-        self.cache = cache
-        self._cache_lock = threading.Lock()
         # Optional device list loaded from a CSV, exposed to the page so a name
         # can be picked instead of typed, and the whole list run in one go.
         self.targets = list(targets or ())
@@ -106,7 +100,6 @@ class Handler(BaseHTTPRequestHandler):
                     # A local base means the bundled stand-in, not real EUDAMED.
                     "is_local": _is_local(base),
                     "device_count": len(self.server.targets),
-                    "cache": self._cache_state(),
                     # Established against the live API; the UI explains the
                     # consequence rather than letting it look like "not found".
                     "exact_match_filters": True,
@@ -123,10 +116,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._discover(query)
             elif parsed.path == "/api/riskclasses":
                 self._risk_classes()
-            elif parsed.path == "/api/cache":
-                self._json(200, self._cache_state())
-            elif parsed.path == "/api/cache/build":
-                self._build_cache(query)
             else:
                 self._json(404, {"error": f"no such path: {parsed.path}"})
         except BrokenPipeError:
@@ -170,19 +159,6 @@ class Handler(BaseHTTPRequestHandler):
                             keys=[name])
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
 
-        # Local matching is the only mode that can find an approximate name.
-        if query.get("use_cache") == "1":
-            cache = self.server.cache
-            if cache is None or not len(cache):
-                self._json(400, {"error": "no local cache yet - build one first"})
-                return
-            result = match_cached(list(cache.devices(reference)), target,
-                                  top=int(query.get("top") or 10),
-                                  min_score=float(query.get("min_score") or 0.0))
-            result["cache"] = self._cache_state()
-            self._json(200, result)
-            return
-
         try:
             result = search_target(self.server.client, target, reference=reference,
                                    top=int(query.get("top") or 10),
@@ -208,10 +184,6 @@ class Handler(BaseHTTPRequestHandler):
         if bad or not chosen:
             raise ValueError(f"not documented /udi parameter(s): {', '.join(bad) or fields}")
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
-        if query.get("use_cache") == "1" and self.server.cache and len(self.server.cache):
-            return match_cached(list(self.server.cache.devices(reference)), target,
-                                top=int(query.get("top") or 10),
-                                min_score=float(query.get("min_score") or 0.0))
         return search_target(self.server.client, target, reference=reference,
                              top=int(query.get("top") or 10),
                              min_score=float(query.get("min_score") or 0.0),
@@ -275,59 +247,6 @@ class Handler(BaseHTTPRequestHandler):
             with open(path, encoding="utf-8") as handle:
                 body = handle.read()
         self._send(200, body, ctype, filename=f"{stem}.{fmt}")
-
-    def _cache_state(self):
-        cache = self.server.cache
-        if cache is None:
-            return {"rows": 0, "loaded": False, "partitions": [], "incomplete": False}
-        return {
-            "rows": len(cache), "loaded": True,
-            "partitions": cache.partitions,
-            "incomplete": bool(cache.truncated_partitions),
-            "truncated_partitions": len(cache.truncated_partitions),
-        }
-
-    def _build_cache(self, query):
-        """Fetch rows into the local cache, one request per partition."""
-        partitions = []
-        field = (query.get("partition_by") or "").upper()
-        if field:
-            if field not in config.UDI_PARAMS:
-                self._json(400, {"error": f"{field} is not a documented /udi parameter"})
-                return
-            reference = self.server.reference()
-            values = sorted(rid for (table, rid) in reference._values if table == field)
-            if not values:
-                self._json(400, {"error": f"/reference has no {field} table to "
-                                          "partition on"})
-                return
-            partitions = [{field: v} for v in values]
-        for item in (query.get("filter") or "").split(";"):
-            if "=" in item:
-                key, value = item.split("=", 1)
-                key = key.strip().upper()
-                if key not in config.UDI_PARAMS:
-                    self._json(400, {"error": f"{key} is not a documented /udi parameter"})
-                    return
-                partitions.append({key: value.strip()})
-        if not partitions:
-            partitions = [{}]
-
-        with self.server._cache_lock:
-            cache = self.server.cache or RowCache()
-            for params in partitions:
-                try:
-                    rows, _ = self.server.client.request("/udi", params)
-                except AuthError as exc:
-                    self._json(401, {"error": "auth", "detail": str(exc)})
-                    return
-                except (ApiError, ValueError) as exc:
-                    self._json(502, {"error": "api", "detail": str(exc),
-                                     "partition": params})
-                    return
-                cache.add(rows, source=params, truncated=len(rows) == 1000)
-            self.server.cache = cache
-        self._json(200, self._cache_state())
 
     def _risk_classes(self):
         """The RISK_CLASS_ID code table, so the UI can offer a class picker.
@@ -428,9 +347,8 @@ def _has_unresolved_codes(result):
     return False
 
 
-def serve(client, port=8100, host="127.0.0.1", verbose=False, targets=None, cache=None):
-    return UIServer((host, port), Handler, client, verbose=verbose, targets=targets,
-                    cache=cache)
+def serve(client, port=8100, host="127.0.0.1", verbose=False, targets=None):
+    return UIServer((host, port), Handler, client, verbose=verbose, targets=targets)
 
 
 FAVICON = (
@@ -584,24 +502,6 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
   <div id="summary"></div>
 </section>
 
-<div class="panel" id="cachepanel">
-  <h2>Local cache <span class="chip" id="cachechip">none</span></h2>
-  <p class="hint" id="cachewhy"></p>
-  <div class="row">
-    <select id="c_part" aria-label="Partition by">
-      <option value="RISK_CLASS_ID">Partition by risk class</option>
-      <option value="APPLICABLE_LEGISLATION_ID">Partition by legislation</option>
-      <option value="PLACED_ON_THE_MARKET_ID">Partition by market country</option>
-      <option value="">One unfiltered page (1000 rows max)</option>
-    </select>
-    <input id="c_filter" placeholder="Extra filters, e.g. NOMENCLATURE_CODE=Z12"
-           aria-label="Extra filters">
-    <button id="c_go" type="button">Build cache</button>
-    <label><input id="c_use" type="checkbox" checked> Match against cache</label>
-  </div>
-  <div id="cachestate"></div>
-</div>
-
 <details class="panel" id="discpanel">
   <summary><strong>Discover by filter</strong> &mdash; find devices without knowing a name</summary>
   <div class="row" style="margin-top:11px">
@@ -636,55 +536,6 @@ const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Mode
 let TH = {found:0.85, possible:0.6};
 
 let DEVICES = [];
-let CACHE = { rows: 0, loaded: false, incomplete: false };
-
-function renderCache() {
-  $("cachechip").textContent = CACHE.rows ? `${CACHE.rows} row(s)` : "none";
-  $("cachewhy").innerHTML =
-    `EUDAMED's <code>/udi</code> filters are <strong>exact match</strong>: searching
-     <code>MindDoc</code> returns nothing whether or not it is registered, because the
-     registered trade name is a different string. Approximate names can only be matched
-     against rows held locally, so build a cache first.`;
-  let html = "";
-  if (CACHE.incomplete) {
-    html += `<div class="errbox"><strong>Cache incomplete.</strong>
-      ${CACHE.truncated_partitions} partition(s) returned exactly 1000 rows, which is the
-      API's cap, so rows are missing. A "not found" against this cache is
-      <em>not</em> evidence that a device is unregistered. Partition more finely.</div>`;
-  }
-  if ((CACHE.partitions || []).length) {
-    html += `<p class="hint">` + CACHE.partitions.map(p =>
-      `<code>${esc(JSON.stringify(p.filter))}</code> ${p.rows} row(s)`
-      + (p.truncated ? " <strong>truncated</strong>" : "")).join(" &middot; ") + `</p>`;
-  }
-  $("cachestate").innerHTML = html;
-  $("c_use").disabled = !CACHE.rows;
-  if (!CACHE.rows) $("c_use").checked = false;
-}
-
-$("c_go").addEventListener("click", async () => {
-  const btn = $("c_go");
-  btn.disabled = true;
-  $("status").className = "";
-  $("status").innerHTML = `<span class="spin"></span> building cache&hellip; `
-    + `one request per partition, so this can take a while`;
-  try {
-    const r = await fetch("/api/cache/build?" + new URLSearchParams({
-      partition_by: $("c_part").value, filter: $("c_filter").value.trim() }));
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || d.error || "build failed");
-    CACHE = d;
-    renderCache();
-    $("c_use").checked = true;
-    $("status").textContent = `Cache holds ${d.rows} row(s).`;
-  } catch (err) {
-    $("status").className = "err";
-    $("status").textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
-});
-
 fetch("/api/health").then(r => r.json()).then(h => {
   TH = h.thresholds || TH;
   // No key is needed: the live API answers anonymous requests. Saying "no key
@@ -692,8 +543,6 @@ fetch("/api/health").then(r => r.json()).then(h => {
   $("sub").innerHTML = `Querying <code>${esc(h.base)}</code>`
     + (h.has_key ? " &middot; using a subscription key"
                  : " &middot; anonymous (no key required)");
-  CACHE = h.cache || CACHE;
-  renderCache();
   if (h.is_local) {
     $("demo").className = "demo";
     $("demo").innerHTML = `<strong>Demo mode.</strong> This is the bundled local stand-in, which
@@ -777,18 +626,12 @@ function render(d) {
       <em>unknown</em>. ${explain(d.errors)}
       <ul>${(d.errors || []).map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul></div>`;
   } else if (!d.candidates.length) {
-    const viaCache = (d.queries || []).some(q => q.param === "local cache");
     html += `<p class="sub">No candidate scored above the minimum.</p>`;
-    if (!viaCache) {
-      html += `<div class="errbox"><strong>This was an exact-match query.</strong>
-        EUDAMED's filters match the whole trade name exactly, so a near-miss returns
-        nothing and this result does <em>not</em> mean the device is unregistered.
-        Build a local cache above and tick <em>Match against cache</em>, or search by an
-        exact UDI-DI or Basic UDI-DI.</div>`;
-    } else if (CACHE.incomplete) {
-      html += `<p class="sub">The cache is incomplete, so this is not evidence of
-        absence either.</p>`;
-    }
+    html += `<div class="errbox"><strong>The API matches names exactly.</strong>
+      A near-miss returns nothing, so this does <em>not</em> mean the device is
+      unregistered &mdash; it may be registered under a different string. Try
+      <code>DEVICE_NAME</code> under Options, an exact UDI-DI, or
+      <code>--backend ui</code> for substring search.</div>`;
   }
   if (d.unresolved_codes) {
     html += `<div class="banner">Some coded fields still show a numeric id: /reference had no
@@ -798,7 +641,6 @@ function render(d) {
   html += d.candidates.map(c => card(c, d.name)).join("");
   const qs = (d.queries || []).map(q =>
     `<code>${esc(q.param)}=${esc(q.term)}</code> ${q.error ? "error" : q.rows + " row(s)"}`).join(", ");
-  if (d.cache) { CACHE = d.cache; renderCache(); }
   html += `<p class="meta">${d.total_matches} row(s) returned. Queries: ${qs}.
     Scores rank candidates; they do not confirm registration &mdash; open the EUDAMED link to
     verify.</p>`;
@@ -810,14 +652,13 @@ function render(d) {
 function currentOpts() {
   const fields = [...document.querySelectorAll(".fld:checked")].map(c => c.value);
   return { fields, top: $("top").value, min: $("min").value,
-           codes: $("codes").checked ? "1" : "0",
-           use_cache: $("c_use").checked ? "1" : "0" };
+           codes: $("codes").checked ? "1" : "0" };
 }
 
 async function query({ name, target }) {
   const o = currentOpts();
   const params = { fields: o.fields.join(","), top: o.top, min_score: o.min,
-                   codes: o.codes, use_cache: o.use_cache };
+                   codes: o.codes };
   if (target) params.target = target; else params.country = $("country").value;
   if (name) params.name = name;
   const r = await fetch("/api/search?" + new URLSearchParams(params));
@@ -905,8 +746,7 @@ function renderSummary() {
 function showDownloads({ target, name, all }) {
   const o = currentOpts();
   const base = p => "/api/report?" + new URLSearchParams({
-    ...p, fields: o.fields.join(","), top: o.top, min_score: o.min, codes: o.codes,
-    use_cache: o.use_cache });
+    ...p, fields: o.fields.join(","), top: o.top, min_score: o.min, codes: o.codes });
   const q = all ? { all: "1" } : (target ? { target } : { name });
   const label = all ? `all ${DEVICES.length} device(s)` : esc(target || name);
   $("dl").hidden = false;

@@ -7,13 +7,12 @@ import sys
 import threading
 
 from . import config
-from .cache import RowCache
 from .client import ApiError, AuthError, Client
 from .fields import describe_keys
 from .records import Actor, Device
 from .reference import Reference
 from .report import write_all
-from .search import Target, load_targets, run, run_cached
+from .search import Target, load_targets, run
 from .ui_backend import DEFAULT_UI_BASE, UiClient
 
 EXIT_OK, EXIT_ERROR, EXIT_AUTH, EXIT_USAGE = 0, 1, 2, 3
@@ -121,42 +120,6 @@ def cmd_search(args):
                 f"Choose from: {', '.join(config.UDI_PARAMS)}")
             return EXIT_USAGE
         params.append(param)
-
-    # Local mode: match against a cache instead of querying per name. This is
-    # the only mode that can find an approximate name, because /udi filters are
-    # exact-match.
-    if args.cache:
-        try:
-            cache = RowCache.load(args.cache)
-        except (OSError, ValueError) as exc:
-            log(f"cannot read --cache: {exc}")
-            return EXIT_USAGE
-        log(f"matching against {len(cache)} cached row(s) from {args.cache}")
-        if cache.truncated_partitions:
-            log(f"  note: {len(cache.truncated_partitions)} partition(s) in this cache hit "
-                "the 1000-row cap, so it is incomplete")
-        reference = None
-        if args.resolve_codes:
-            client = make_client(args)
-            log("loading reference codes")
-            reference = Reference(client, language=args.language,
-                                  verbose=args.verbose).load()
-        results = run_cached(list(cache.devices(reference)), targets, top=args.top,
-                             min_score=args.min_score, keep_raw=args.keep_raw,
-                             progress=log)
-        meta = {"base": f"local cache {args.cache}", "fields": "local fuzzy match",
-                "format": "cache", "requests": 0,
-                "cached_rows": len(cache),
-                "cache_incomplete": bool(cache.truncated_partitions),
-                "tool_version": __import__("eudamed").__version__}
-        paths = write_all(results, args.out, meta)
-        tally = {s: sum(r["status"] == s for r in results)
-                 for s in ("found", "possible", "not found")}
-        log("")
-        log(f"{tally}  from {len(cache)} cached row(s)")
-        for kind in ("json", "csv", "md", "html"):
-            log(f"  {kind:4} {os.path.abspath(paths[kind])}")
-        return EXIT_OK
 
     client = make_client(args)
     if not require_key(client, args):
@@ -401,26 +364,13 @@ def cmd_serve(args):
             log(f"cannot read --input: {exc}")
             return EXIT_USAGE
 
-    cache = None
-    if args.cache:
-        try:
-            cache = RowCache.load(args.cache)
-        except (OSError, ValueError) as exc:
-            log(f"cannot read --cache: {exc}")
-            return EXIT_USAGE
-
     server = make_server(client, port=args.port, host=args.host,
-                         verbose=args.verbose, targets=targets, cache=cache)
+                         verbose=args.verbose, targets=targets)
     url = f"http://{args.host}:{args.port}"
     log(f"EUDAMED search UI on {url}")
     log(f"  querying {client.base}  (--backend {args.backend})")
     if targets:
         log(f"  {len(targets)} device(s) loaded from {args.input}")
-    if cache is not None:
-        log(f"  {len(cache)} cached row(s) from {args.cache}")
-        if cache.truncated_partitions:
-            log(f"  note: {len(cache.truncated_partitions)} partition(s) were truncated, "
-                "so the cache is incomplete")
     log("  press Ctrl-C to stop")
     if args.open_browser:
         import webbrowser
@@ -431,81 +381,6 @@ def cmd_serve(args):
         log("stopped")
     finally:
         server.server_close()
-    return EXIT_OK
-
-
-# ------------------------------------------------------------------ scan
-def cmd_scan(args):
-    """Build a local cache of /udi rows.
-
-    Necessary because /udi filters are exact-match and there is no pagination:
-    an approximate name cannot be searched server-side, so rows must be held
-    locally and matched here. A single request returns at most 1000 rows, so
-    the dataset is fetched in partitions.
-    """
-    client = make_client(args)
-    cache = RowCache()
-
-    partitions = []
-    for item in args.filter or []:
-        if "=" not in item:
-            log(f"--filter must be K=V, got {item!r}")
-            return EXIT_USAGE
-        key, value = item.split("=", 1)
-        if key not in config.UDI_PARAMS:
-            log(f"--filter: {key!r} is not a documented /udi parameter")
-            return EXIT_USAGE
-        partitions.append({key: value})
-
-    if args.partition_by:
-        field = args.partition_by.upper()
-        if field not in config.UDI_PARAMS:
-            log(f"--partition-by: {field!r} is not a documented /udi parameter")
-            return EXIT_USAGE
-        log(f"reading {field} values from /reference")
-        reference = Reference(client, language=args.language, verbose=args.verbose).load()
-        values = [rid for (table, rid) in reference._values if table == field]
-        if not values:
-            log(f"  /reference has no {field} table, so it cannot be partitioned on.")
-            log("  Use --filter K=V with values you know instead.")
-            return EXIT_USAGE
-        log(f"  {len(values)} value(s): {sorted(values)}")
-        base = list(partitions) or [{}]
-        partitions = [{**p, field: v} for p in base for v in sorted(values)]
-
-    if not partitions:
-        partitions = [{}]
-        log("no partitions given - fetching one unfiltered page (capped at 1000 rows)")
-
-    for n, params in enumerate(partitions, start=1):
-        label = ", ".join(f"{k}={v}" for k, v in params.items()) or "(unfiltered)"
-        try:
-            rows, body = client.request("/udi", params)
-        except AuthError as exc:
-            log(str(exc))
-            return EXIT_AUTH
-        except (ApiError, ValueError) as exc:
-            log(f"  [{n}/{len(partitions)}] {label}: failed - {exc}")
-            continue
-        truncated = len(rows) == 1000
-        added = cache.add(rows, source=params, truncated=truncated)
-        flag = "  TRUNCATED at the 1000-row cap" if truncated else ""
-        log(f"  [{n}/{len(partitions)}] {label}: {len(rows)} row(s), "
-            f"+{added} new, {len(body)} bytes{flag}")
-
-    path = args.out
-    saved, meta = cache.save(path)
-    log("")
-    log(f"{len(cache)} unique row(s) -> {os.path.abspath(saved)}")
-    log(f"  metadata -> {os.path.abspath(meta)}")
-    if cache.truncated_partitions:
-        log("")
-        log(f"WARNING: {len(cache.truncated_partitions)} partition(s) hit the 1000-row cap,")
-        log("         so the cache is INCOMPLETE. Partition more finely before concluding")
-        log("         that a device is absent.")
-    log("")
-    log("Match a device list against it with:")
-    log(f"  python3 -m eudamed search --input devices.csv --cache {saved} --out results")
     return EXIT_OK
 
 
@@ -797,10 +672,6 @@ def build_parser():
     search.add_argument("--no-resolve-codes", dest="resolve_codes", action="store_false",
                         help="skip the /reference call that turns numeric ids into codes")
     search.add_argument("--language", default="en", help="language for /reference labels")
-    search.add_argument("--cache", help="match against a local cache built by `scan` "
-                                        "instead of querying the API per name. Required "
-                                        "for approximate names, since /udi filters are "
-                                        "exact-match")
     search.add_argument("--page-size", type=int, default=100,
                         help="rows per page (ui backend only)")
     search.add_argument("--max-pages", type=int, default=5,
@@ -843,8 +714,6 @@ def build_parser():
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--input", help="CSV of devices to offer in the UI as a "
                                     "clickable list and a 'Run all' batch")
-    ui.add_argument("--cache", help="preload a cache built by `scan`, so the UI can match "
-                                    "approximate names straight away")
     ui.add_argument("--no-open", dest="open_browser", action="store_false",
                     help="do not open a browser automatically")
     add_common(ui)
@@ -888,18 +757,6 @@ def build_parser():
     dis.add_argument("--keep-raw", action="store_true")
     add_common(dis)
     dis.set_defaults(func=cmd_discover)
-
-    sc = subs.add_parser(
-        "scan", help="cache /udi rows locally, so approximate names can be matched")
-    sc.add_argument("--out", default="cache/udi.jsonl", help="cache file to write")
-    sc.add_argument("--filter", action="append", default=[], metavar="K=V",
-                    help="a documented /udi filter; repeatable, one partition each")
-    sc.add_argument("--partition-by",
-                    help="a coded /udi field to fan out over, e.g. RISK_CLASS_ID; "
-                         "values come from /reference")
-    sc.add_argument("--language", default="en")
-    add_common(sc)
-    sc.set_defaults(func=cmd_scan)
 
     return parser
 

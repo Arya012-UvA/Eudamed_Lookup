@@ -110,7 +110,7 @@ class UIClient:
 
 @pytest.fixture
 def ui_server_fresh(live_server):
-    """A UI server with no cache, for the empty-cache paths."""
+    """A per-test UI server, for paths that must not see another test's state."""
     from eudamed.webui import serve as make_ui
 
     client = Client(base=live_server, key="dummy", delay=0, backoff_base=0)
