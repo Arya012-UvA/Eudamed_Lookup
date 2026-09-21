@@ -154,3 +154,78 @@ def test_ui_backend_needs_no_key(live_server, tmp_path, monkeypatch):
     assert main(["search", "--backend", "ui", "--base", live_server, "--require-key",
                  "--input", str(csv_path), "--out", str(tmp_path / "r"),
                  "--delay", "0", "--retries", "1"]) == EXIT_OK
+
+
+# --- operation paths must follow the backend ----------------------------
+def test_path_constants_differ_between_backends():
+    from eudamed.client import Client
+    assert UiClient().DEVICE_PATH == "/devices/udiDiData"
+    assert UiClient().ACTOR_PATH == "/actors/actorDataPublicView"
+    assert UiClient().HAS_REFERENCE is False
+    assert Client().DEVICE_PATH == "/udi"
+    assert Client().ACTOR_PATH == "/actors"
+    assert Client().HAS_REFERENCE is True
+
+
+@pytest.mark.parametrize("command", ["discover", "probe"])
+def test_commands_use_the_ui_path_on_the_ui_backend(command, capsys):
+    """Regression guard: both commands hardcoded "/udi", so --backend ui
+    built .../api/udi and the substring backend was unreachable."""
+    argv = [command, "--backend", "ui", "--trade-name", "depress", "--dry-run"]
+    assert main(argv) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "/devices/udiDiData" in out
+    assert "/api/udi?" not in out
+
+
+@pytest.mark.parametrize("command", ["discover", "probe"])
+def test_commands_keep_the_documented_path_on_datalake(command, capsys):
+    assert main([command, "--backend", "datalake", "--trade-name", "depress",
+                 "--dry-run"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "/eudamed/udi?" in out
+    assert "/devices/udiDiData" not in out
+
+
+def test_probe_skips_reference_on_a_backend_without_it(live_server, capsys):
+    """The ui backend has no /reference; probing it would only fail."""
+    main(["probe", "--backend", "ui", "--base", live_server,
+          "--trade-name", "MindDoc", "--delay", "0", "--retries", "1"])
+    err = capsys.readouterr().err
+    assert "skipping /reference" in err
+
+
+def test_search_skips_reference_on_a_backend_without_it(live_server, tmp_path, capsys):
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,keys\nmind,mind\n", encoding="utf-8")
+    main(["search", "--backend", "ui", "--base", live_server, "--input", str(csv_path),
+          "--fields", "TRADE_NAME", "--out", str(tmp_path / "r"),
+          "--delay", "0", "--retries", "1"])
+    err = capsys.readouterr().err
+    assert "skipping reference codes" in err
+    assert "loading reference codes" not in err
+
+
+# --- nested codes from the ui backend -----------------------------------
+def test_nested_codes_are_unwrapped_not_stringified():
+    """The ui backend nests codes as {"code": "RISK_CLASS.IIA"}. Stringifying
+    that dict leaked "{'code': 'RISK_CLASS.IIA'}" into reports."""
+    from eudamed.records import Device, coded
+    device = Device({"tradeName": "X",
+                     "riskClass": {"code": "RISK_CLASS.IIA"},
+                     "deviceStatusType": {"code": "DEVICE_STATUS.ON_THE_MARKET"}})
+    assert device.risk_class == "IIA"
+    assert device.device_status == "ON_THE_MARKET"
+    assert "{" not in device.risk_class
+
+    assert coded("Class I") == "Class I"          # plain strings pass through
+    assert coded(None) == "" and coded({}) == ""
+    assert coded({"code": ""}) == ""
+    assert coded({"CODE": "A.B"}) == "B"          # either spelling
+
+
+def test_datalake_numeric_codes_are_untouched():
+    from eudamed.records import Device
+    device = Device({"TRADE_NAME": "X", "RISK_CLASS_ID": 2})
+    assert device.risk_class == ""                # filled by /reference later
+    assert device.risk_class_id == 2

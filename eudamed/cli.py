@@ -133,7 +133,12 @@ def cmd_search(args):
         return EXIT_OK
 
     reference = None
-    if args.resolve_codes:
+    if args.resolve_codes and not client.HAS_REFERENCE:
+        # This backend nests its codes inside the rows instead, so there is
+        # nothing to resolve and a request would only fail.
+        log(f"skipping reference codes - the {args.backend} backend has no "
+            "/reference operation; coded fields come from the rows themselves")
+    elif args.resolve_codes:
         log("loading reference codes")
         reference = Reference(client, language=args.language, verbose=args.verbose).load()
 
@@ -254,14 +259,19 @@ def cmd_probe(args):
     """
     client = make_client(args)
     if args.dry_run:
-        print(client.build_url("/udi", {"TRADE_NAME": args.trade_name}))
+        print(client.build_url(client.DEVICE_PATH, {"TRADE_NAME": args.trade_name}))
         return EXIT_OK
     if not require_key(client, args):
         return EXIT_AUTH
 
-    ops = [("/udi", {"TRADE_NAME": args.trade_name}),
-           ("/actors", {"NAME": args.actor_name} if args.actor_name else None),
-           ("/reference", {"LANGUAGE": args.language})]
+    # Paths differ per backend, so ask the client rather than hardcoding the
+    # documented API's spellings.
+    ops = [(client.DEVICE_PATH, {"TRADE_NAME": args.trade_name}),
+           (client.ACTOR_PATH, {"NAME": args.actor_name} if args.actor_name else None)]
+    if client.HAS_REFERENCE:
+        ops.append(("/reference", {"LANGUAGE": args.language}))
+    else:
+        log("skipping /reference - this backend has no such operation")
     report, failures = {}, 0
     for path, query in ops:
         if query is None:
@@ -301,14 +311,14 @@ def cmd_probe(args):
     # If the filtered /udi call found nothing, try it unfiltered. That
     # separates "this endpoint returns nothing at all" from "the filter matched
     # nothing", which need completely different fixes.
-    udi = report.get("/udi", {})
+    udi = report.get(client.DEVICE_PATH, {})
     if udi.get("rows") == 0 and not args.dry_run:
         log("")
-        log("/udi returned no rows - retrying with no filter to tell apart "
-            "an empty endpoint from an unmatched filter")
+        log(f"{client.DEVICE_PATH} returned no rows - retrying with no filter to "
+            "tell apart an empty endpoint from an unmatched filter")
         try:
-            rows, body = client.request("/udi", {})
-            report["/udi (no filter)"] = {
+            rows, body = client.request(client.DEVICE_PATH, {})
+            report[f"{client.DEVICE_PATH} (no filter)"] = {
                 "rows": len(rows), "bytes": len(body),
                 "fields": describe_keys(rows),
                 "sample": rows[0] if rows else None,
@@ -429,12 +439,12 @@ def cmd_discover(args):
         return EXIT_USAGE
 
     if args.dry_run:
-        print(client.build_url("/udi", params))
+        print(client.build_url(client.DEVICE_PATH, params))
         return EXIT_OK
 
-    log(f"querying /udi with {params}")
+    log(f"querying {client.DEVICE_PATH} with {params}")
     try:
-        rows, body = client.request("/udi", params)
+        rows, body = client.request(client.DEVICE_PATH, params)
     except AuthError as exc:
         log(str(exc))
         return EXIT_AUTH

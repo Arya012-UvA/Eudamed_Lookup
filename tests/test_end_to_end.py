@@ -764,3 +764,62 @@ def test_search_defaults_to_the_documented_api(capsys):
     assert "api.datalake.sante.service.ec.europa.eu" in out
     for field in ("TRADE_NAME", "DEVICE_NAME"):
         assert f"{field}=MindDoc" in out
+
+
+# --- discovery sweep: finding devices you cannot name -------------------
+def test_substring_sweep_surfaces_devices_by_stem(live_server, tmp_path):
+    """The point of the sweep: a stem like "mind" finds MindDoc without
+    anyone knowing the device existed. Exact matching cannot do this."""
+    csv_path = tmp_path / "terms.csv"
+    csv_path.write_text("name,keys\nmind,mind\nmood,mood\n", encoding="utf-8")
+
+    ui_out = tmp_path / "ui"
+    assert main(["search", "--backend", "ui", "--base", live_server,
+                 "--input", str(csv_path), "--fields", "TRADE_NAME",
+                 "--top", "50", "--out", str(ui_out),
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    found = {r["name"]: r for r in
+             json.loads((ui_out / "results.json").read_text())["results"]}
+    assert found["mind"]["status"] == "found"
+    assert found["mind"]["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
+    assert found["mood"]["candidates"][0]["trade_name"] == "Moodpath"
+
+    # The same sweep on the documented API finds nothing, because its filters
+    # are exact whole-string matches.
+    dl_out = tmp_path / "dl"
+    main(["search", *DL, "--base", live_server, "--key", "dummy",
+          "--input", str(csv_path), "--fields", "TRADE_NAME",
+          "--out", str(dl_out), "--delay", "0", "--retries", "1"])
+    results = json.loads((dl_out / "results.json").read_text())["results"]
+    assert all(r["status"] == "not found" for r in results)
+
+
+def test_sweep_report_has_no_raw_dicts_in_coded_columns(live_server, tmp_path):
+    """Coded fields from the ui backend are nested objects; they must be
+    unwrapped before they reach the report."""
+    csv_path = tmp_path / "terms.csv"
+    csv_path.write_text("name,keys\nmind,mind\n", encoding="utf-8")
+    out = tmp_path / "r"
+    main(["search", "--backend", "ui", "--base", live_server,
+          "--input", str(csv_path), "--fields", "TRADE_NAME",
+          "--out", str(out), "--delay", "0", "--retries", "1"])
+    md = (out / "report.md").read_text(encoding="utf-8")
+    assert "{'code'" not in md and '{"code"' not in md
+
+
+def test_shipped_psych_term_list_is_usable():
+    """psych-discovery.csv is the ready-made sweep input."""
+    from pathlib import Path
+
+    from eudamed.search import load_targets
+    path = Path(__file__).resolve().parent.parent / "psych-discovery.csv"
+    assert path.exists(), "psych-discovery.csv is missing from the repo root"
+    targets = load_targets(str(path))
+    assert len(targets) >= 12
+    assert all(t.keys and t.keys[0].strip() for t in targets)
+    stems = [t.keys[0] for t in targets]
+    assert len(set(stems)) == len(stems), "duplicate stems waste requests"
+    # Stems must be short enough to be substrings, not full product names.
+    assert all(" " not in s for s in stems)
+    for expected in ("depress", "anxiet", "psych", "mental"):
+        assert expected in stems

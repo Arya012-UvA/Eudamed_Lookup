@@ -8,6 +8,22 @@ The untouched source row is kept as .raw.
 
 from .fields import index_row, pick
 
+
+def coded(value):
+    """Flatten a coded field to its short label.
+
+    The two backends encode these differently. The datalake API returns a
+    numeric ``*_ID`` column that /reference resolves. The web-UI backend
+    instead nests the code, ``{"code": "RISK_CLASS.IIA"}`` — stringifying that
+    dict leaks ``{'code': 'RISK_CLASS.IIA'}`` into reports, so unwrap it to
+    the part after the last dot.
+    """
+    if isinstance(value, dict):
+        raw = value.get("code") or value.get("CODE") or ""
+        return str(raw).rsplit(".", 1)[-1] if raw else ""
+    return "" if value is None else str(value)
+
+
 UI_DEVICE = "https://ec.europa.eu/tools/eudamed/#/screen/search-device/{uuid}"
 UI_SEARCH = "https://ec.europa.eu/tools/eudamed/#/screen/search-device?deviceIdentifier={di}"
 
@@ -30,21 +46,21 @@ class Device:
         # Not query-filterable, so the spelling is a guess; kept wide.
         self.manufacturer_name = str(pick(
             i, "MF_NAME", "MANUFACTURER_NAME", "manufacturerName", "mfName", "actorName"))
-        self.risk_class = str(pick(i, "RISK_CLASS", "riskClass", "RISK_CLASS_CODE"))
+        self.risk_class = coded(pick(i, "RISK_CLASS", "riskClass", "RISK_CLASS_CODE"))
         self.risk_class_id = pick(i, "RISK_CLASS_ID", "riskClassId", default=None)
-        self.legislation = str(pick(i, "APPLICABLE_LEGISLATION", "applicableLegislation"))
+        self.legislation = coded(pick(i, "APPLICABLE_LEGISLATION", "applicableLegislation"))
         self.legislation_id = pick(i, "APPLICABLE_LEGISLATION_ID",
                                    "applicableLegislationId", default=None)
         # PLACED_ON_THE_MARKET_ID resolves to a COUNTRY ("Israel") in the live
         # /reference table, not a status. The device's market status is the
         # separate DEVICE_STATUS_TYPE_ID column.
-        self.placed_on_market = str(pick(i, "PLACED_ON_THE_MARKET", "placedOnTheMarket"))
+        self.placed_on_market = coded(pick(i, "PLACED_ON_THE_MARKET", "placedOnTheMarket"))
         self.placed_on_market_id = pick(i, "PLACED_ON_THE_MARKET_ID",
                                         "placedOnTheMarketId", default=None)
-        self.device_status = str(pick(i, "DEVICE_STATUS_TYPE", "deviceStatusType"))
+        self.device_status = coded(pick(i, "DEVICE_STATUS_TYPE", "deviceStatusType"))
         self.device_status_id = pick(i, "DEVICE_STATUS_TYPE_ID", "deviceStatusTypeId",
                                      "STATUS_ID", default=None)
-        self.special_type = str(pick(i, "SPECIAL_DEVICE_TYPE", "specialDeviceType"))
+        self.special_type = coded(pick(i, "SPECIAL_DEVICE_TYPE", "specialDeviceType"))
         self.special_type_id = pick(i, "SPECIAL_DEVICE_TYPE_ID",
                                     "specialDeviceTypeId", default=None)
         self.uuid = str(pick(i, "UUID", "uuid", "id", "udiDiDataUuid"))

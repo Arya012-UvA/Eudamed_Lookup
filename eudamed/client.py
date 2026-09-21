@@ -36,8 +36,14 @@ class Client:
     #: parameters. The web-UI backend takes neither.
     SEND_FORMAT = True
 
-    #: The device-search path, which differs between the two backends.
+    #: Operation paths, which differ between the two backends.
     DEVICE_PATH = "/udi"
+    ACTOR_PATH = "/actors"
+
+    #: Whether this backend has a /reference operation at all. The web-UI
+    #: backend does not, so callers can skip it rather than fire a doomed
+    #: request and report a spurious failure.
+    HAS_REFERENCE = True
 
     def __init__(self, base=None, key=None, auth_mode="header", fmt="json",
                  delay=0.2, retries=4, timeout=60, verbose=False,

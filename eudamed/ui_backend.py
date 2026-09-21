@@ -47,6 +47,8 @@ class UiClient(Client):
 
     SEND_FORMAT = False
     DEVICE_PATH = "/devices/udiDiData"
+    ACTOR_PATH = "/actors/actorDataPublicView"
+    HAS_REFERENCE = False
 
     def __init__(self, base=None, page_size=100, max_pages=5, language="en", **kw):
         kw.setdefault("key", "")
@@ -127,7 +129,7 @@ class UiClient(Client):
         return self.request(self.DEVICE_PATH, params)
 
     def actors(self, **params):
-        return self.request("/actors/actorDataPublicView", params)
+        return self.request(self.ACTOR_PATH, params)
 
     def reference(self, **params):
         raise ApiError("the web-UI backend has no /reference operation; "

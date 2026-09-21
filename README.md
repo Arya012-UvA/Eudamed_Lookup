@@ -156,9 +156,22 @@ python3 -m eudamed discover --risk-class I --keyword depression,anxiety,mental -
 ```
 
 `--risk-class` takes a human class (`I`, `IIa`, `IIb`, `III`) and resolves it
-through `/reference`, since `RISK_CLASS_ID` is numeric. Other filters:
-`--nomenclature` (EMDN), `--medical-purpose`, `--device-name`, `--trade-name`,
-`--mf-srn`, `--legislation-id`.
+through `/reference`, since `RISK_CLASS_ID` is numeric. `--legislation-id` and
+`--mf-srn` behave likewise.
+
+**The free-text filters are not keyword search.** `--medical-purpose`,
+`--device-name`, `--trade-name` and `--nomenclature` are exact whole-string
+matches on the datalake backend, like every other free-text `/udi` filter. So
+`--medical-purpose depression` returns nothing unless a device's medical
+purpose is *literally the single word* "depression". Earlier versions of this
+README implied otherwise; that was wrong.
+
+Only two kinds of filter are useful here:
+
+| Kind | Params | Use |
+| --- | --- | --- |
+| Coded | `--risk-class`, `--legislation-id`, and the raw `*_ID` params | small integer sets, genuinely filterable |
+| Free text | `--trade-name`, `--device-name`, `--medical-purpose`, `--nomenclature` | only if you already know the exact string |
 
 `--keyword` is applied **locally** to the rows that come back, for concepts the
 API cannot filter on server-side. It narrows, it does not search — anything the
@@ -167,6 +180,40 @@ server filter excluded was never retrieved.
 If the result comes back at exactly 1000 rows it is **truncated** by the server
 cap and the command says so. Narrow the filters rather than treating it as
 complete.
+
+### Finding devices you cannot name — the substring sweep
+
+`discover` needs a filter you can state. When you cannot even name the devices
+— *"what other apps exist for psychological conditions?"* — the only route is
+substring matching on trade names, which means `--backend ui` (the EUDAMED
+website's own backend; the documented API cannot do partial matches at all).
+
+`psych-discovery.csv` ships with the repo: sixteen short stems (`depress`,
+`anxiet`, `psych`, `mental`, `burnout`, `insomni`, `therap`, …) shaped as an
+ordinary input file, so the existing `search` pipeline sweeps them:
+
+```bash
+python3 -m eudamed search --input psych-discovery.csv --backend ui \
+    --fields TRADE_NAME --top 50 --out psych-discovery
+```
+
+Then read `psych-discovery/report.md` and compare against `devices.csv` for
+devices you did not already know about.
+
+Two caveats worth keeping:
+
+- **A substring hit proves nothing about indication.** `mind`, `coach` or
+  `sleep` will match devices that have nothing to do with mental health. The
+  sweep produces *candidates to check* — open each EUDAMED link before
+  describing a device as a psychological-health product.
+- **`--backend ui` is undocumented** and can change without notice. Use it to
+  discover names, then confirm each one against the documented API with a
+  normal `search`.
+
+For a *complete* list of German prescribable digital health apps, the DiGA
+directory at <https://diga.bfarm.de> is the authoritative upstream and a better
+starting point than reverse-engineering EUDAMED — this repo's `devices.csv` is
+evidently derived from it.
 
 ### `filtertest` — how does `/udi` filtering actually behave?
 
@@ -335,7 +382,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 234 tests
+pytest -q          # 246 tests
 ruff check eudamed tests
 ```
 
@@ -585,7 +632,7 @@ eudamed/
   ui_backend.py   the EUDAMED website's backend: substring search, paginated
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            234 tests, no network required
+tests/            246 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
