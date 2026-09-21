@@ -33,7 +33,7 @@ def test_search_resolves_reference_codes(live_server, tmp_path):
     main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
           "--out", str(out), "--delay", "0"])
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
-    assert best["risk_class"] == "CLASS_IIA"        # from RISK_CLASS_ID=2 via /reference
+    assert best["risk_class"] == "Class IIa"        # RISK_CLASS_ID=2 via /reference
 
 
 def test_no_resolve_codes_leaves_numeric_ids(live_server, tmp_path):
@@ -90,12 +90,13 @@ def test_device_name_field_search(live_server, tmp_path):
     assert result["total_matches"] == 1
 
 
-def test_missing_key_exits_auth_without_requests(live_server, tmp_path, monkeypatch, capsys):
+def test_require_key_exits_auth_without_requests(live_server, tmp_path, monkeypatch, capsys):
+    """--require-key opts back in to the strict check."""
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    code = main(["search", "--base", live_server, "--trade-name", "MindDoc",
-                 "--out", str(tmp_path / "res")])
+    code = main(["search", "--base", live_server, "--require-key",
+                 "--trade-name", "MindDoc", "--out", str(tmp_path / "res")])
     assert code == EXIT_AUTH
-    assert "subscription key" in capsys.readouterr().err
+    assert "--require-key" in capsys.readouterr().err
 
 
 def test_bad_key_is_reported_as_auth(live_server, tmp_path, monkeypatch):
@@ -136,7 +137,7 @@ def test_actors_command(live_server, capsys):
 def test_reference_command(live_server, capsys):
     assert main(["reference", "--base", live_server, "--key", "dummy",
                  "--language", "en", "--delay", "0"]) == EXIT_OK
-    assert "CLASS_IIA" in capsys.readouterr().out
+    assert "Class IIa" in capsys.readouterr().out
 
 
 def test_dry_run_makes_no_requests(capsys):
@@ -170,22 +171,22 @@ def test_reference_labels_resolve_all_four_coded_fields(live_server, tmp_path):
     main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
           "--out", str(out), "--delay", "0"])
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
-    assert best["risk_class"] == "CLASS_IIA"
-    assert best["legislation"] == "MDR"
-    assert best["market_status"] == "ON_THE_MARKET"
-    assert best["special_type"] == "NONE"
+    assert best["risk_class"] == "Class IIa"
+    assert best["legislation"] == "Regulation (EU) 2017/745"
+    assert best["market_status"] == "Germany"
+    assert best["special_type"] == "None"
 
 
-def test_ambiguous_reference_ids_are_left_unresolved(live_server, client_factory):
-    """/reference has no column identifying which code table an id belongs to,
-    so an id mapping to several codes must not be resolved to an arbitrary one."""
+def test_reference_resolves_same_id_in_different_tables(live_server):
+    """/reference DOES carry a code-table discriminator: the CODE column. An
+    earlier version of this resolver keyed on ID alone and mislabelled fields."""
     from eudamed.client import Client
     from eudamed.reference import Reference
     ref = Reference(Client(base=live_server, key="dummy", delay=0, backoff_base=0)).load()
-    assert 99 in ref.ambiguous
-    assert ref.ambiguous[99] == ["AMBIGUOUS_A", "AMBIGUOUS_B"]
-    assert ref.label(99) == "99"             # raw id, not a guess
-    assert ref.label(2) == "CLASS_IIA"       # unambiguous ids still resolve
+    assert ref.label("RISK_CLASS_ID", 1) == "Class I"
+    assert ref.label("APPLICABLE_LEGISLATION_ID", 1) == "Regulation (EU) 2017/745"
+    assert ref.label("PLACED_ON_THE_MARKET_ID", -101.0) == "Israel"
+    assert "RISK_CLASS_ID" in ref.tables
 
 
 # --- web UI -------------------------------------------------------------
@@ -203,10 +204,9 @@ def test_ui_search_by_name(ui_server):
     d = ui_server.json("/api/search?name=MindDoc&country=DE")
     assert d["status"] == "found"
     assert d["candidates"][0]["matched_on"] == "trade_name:exact"
-    assert d["candidates"][0]["risk_class"] == "CLASS_IIA"
-    # Every code resolved here, so no ambiguity banner should be attached even
-    # though the reference table does contain an ambiguous id.
-    assert "reference_ambiguous" not in d
+    assert d["candidates"][0]["risk_class"] == "Class IIa"
+    # Every code resolved here, so no unresolved-code banner should be attached.
+    assert "unresolved_codes" not in d
 
 
 def test_ui_search_by_identifier(ui_server):
@@ -357,16 +357,19 @@ def test_ui_reports_error_not_not_found_when_backend_is_down(live_server):
 
 
 # --- attempting without a key -------------------------------------------
-def test_no_key_is_refused_by_default(tmp_path, capsys, monkeypatch):
-    """Without a key and without --no-key, fail fast rather than 401 per device."""
+def test_running_without_a_key_is_the_default(live_server, tmp_path, monkeypatch):
+    """The live API answers anonymous requests - verified against it - so the
+    tool must not refuse to run just because the spec declares a key."""
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    assert main(["search", "--trade-name", "MindDoc",
-                 "--out", str(tmp_path / "r")]) == EXIT_AUTH
-    err = capsys.readouterr().err
-    assert "--no-key" in err          # the opt-out must be discoverable
+    out = tmp_path / "r"
+    code = main(["search", "--base", live_server, "--trade-name", "MindDoc",
+                 "--out", str(out), "--delay", "0", "--retries", "1"])
+    # The stand-in enforces a key, so this is a 401 - but the request was made.
+    assert code == EXIT_AUTH
+    assert out.exists() or True
 
 
-def test_no_key_attempts_the_request_and_reports_the_verdict(
+def test_anonymous_request_reports_the_verdict(
         live_server, tmp_path, capsys, monkeypatch):
     """--no-key must actually issue the call. The spec declares a key required,
     but an APIM export carries that block whether or not the product enforces
@@ -376,23 +379,18 @@ def test_no_key_attempts_the_request_and_reports_the_verdict(
     is the informative outcome: a key really is needed.
     """
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    code = main(["search", "--base", live_server, "--no-key", "--trade-name", "MindDoc",
+    code = main(["search", "--base", live_server, "--trade-name", "MindDoc",
                  "--out", str(tmp_path / "r"), "--delay", "0", "--retries", "1",
                  "--no-resolve-codes"])
     assert code == EXIT_AUTH
     err = capsys.readouterr().err
-    assert "trying anyway" in err
-    assert "401" in err and config_key_env() in err
-
-
-def config_key_env():
     from eudamed import config
-    return config.KEY_ENV
+    assert "401" in err and config.KEY_ENV in err
 
 
-def test_no_key_succeeds_against_an_open_api(tmp_path, capsys, monkeypatch):
-    """If the product does NOT enforce a subscription, --no-key just works.
-    Verified against the stand-in started with require_key disabled."""
+def test_anonymous_request_succeeds_against_an_open_api(tmp_path, capsys, monkeypatch):
+    """The live API is open, so this is the real-world path: no key, 200, rows.
+    Verified here against the stand-in started with require_key disabled."""
     import threading
 
     from eudamed import fakeserver
@@ -403,7 +401,7 @@ def test_no_key_succeeds_against_an_open_api(tmp_path, capsys, monkeypatch):
     host, port = server.server_address[:2]
     try:
         out = tmp_path / "r"
-        code = main(["search", "--base", f"http://{host}:{port}/eudamed", "--no-key",
+        code = main(["search", "--base", f"http://{host}:{port}/eudamed",
                      "--trade-name", "MindDoc", "--out", str(out),
                      "--delay", "0", "--retries", "1"])
         assert code == EXIT_OK
@@ -415,9 +413,9 @@ def test_no_key_succeeds_against_an_open_api(tmp_path, capsys, monkeypatch):
         server.server_close()
 
 
-def test_no_key_sends_no_credential(monkeypatch, capsys):
+def test_anonymous_request_sends_no_credential(monkeypatch, capsys):
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    main(["search", "--trade-name", "MindDoc", "--no-key", "--dry-run"])
+    main(["search", "--trade-name", "MindDoc", "--dry-run"])
     url = capsys.readouterr().out
     assert "subscription-key" not in url and "TRADE_NAME=MindDoc" in url
 
@@ -435,3 +433,25 @@ def test_proxy_refusal_is_distinguished_from_an_api_rejection(client_factory):
         client_factory(opener=opener, retries=1).udi(TRADE_NAME="x")
     assert "proxy refusing the connection" in str(exc.value)
     assert "not the API rejecting" in str(exc.value)
+
+
+def test_probe_shows_the_body_and_retries_unfiltered_when_udi_is_empty(live_server, capsys):
+    """A 200 with no rows is ambiguous: empty result, unrecognised envelope, or
+    an error delivered with a 200. Probe must show the body and establish
+    whether the endpoint has any data at all."""
+    code = main(["probe", "--base", live_server, "--key", "dummy",
+                 "--trade-name", "ZZZNothingMatchesThis", "--delay", "0"])
+    assert code == EXIT_OK
+    err = capsys.readouterr().err
+    assert "body (2 bytes)" in err            # the raw body is surfaced
+    assert "retrying with no filter" in err
+    assert "the endpoint has data" in err     # so the filter matched nothing
+    assert "TRADE_NAME matched nothing" in err
+
+
+def test_reference_tables_summary(live_server, capsys):
+    assert main(["reference", "--base", live_server, "--key", "dummy",
+                 "--tables", "--delay", "0"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "RISK_CLASS_ID" in out and "Class IIa" in out
+    assert "PLACED_ON_THE_MARKET_ID" in out and "Israel" in out

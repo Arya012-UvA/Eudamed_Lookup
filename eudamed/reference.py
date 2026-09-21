@@ -1,23 +1,51 @@
 """Resolve the numeric *_ID columns on /udi rows via the /reference operation.
 
-/udi filters and (presumably) returns RISK_CLASS_ID, APPLICABLE_LEGISLATION_ID,
-PLACED_ON_THE_MARKET_ID and SPECIAL_DEVICE_TYPE_ID as numbers. /reference maps
-ID -> CODE, so one fetch can turn those into human-readable labels.
+Verified response shape (live probe, 294 rows, LANGUAGE=en):
 
-Important caveat, straight from the spec: /reference exposes only ID, CODE and
-LANGUAGE. There is no column identifying which code *table* a row belongs to.
-So if risk-class id 1 and legislation id 1 are different things - which is
-likely, since they are separate enumerations - a flat ID -> CODE map is
-ambiguous and would silently mislabel fields.
+    {"ID": -101.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en",
+     "VALUE": "Israel"}
 
-This resolver therefore refuses to guess: an ID that maps to more than one
-distinct CODE is treated as ambiguous and left unresolved, and the ambiguity is
-reported. A confidently wrong risk class is worse than a visible numeric id.
-A failed lookup is likewise never fatal.
+So the table is keyed by ``(CODE, ID)`` and ``VALUE`` holds the label. ``CODE``
+names the code table, and the names line up with the numeric /udi query
+parameters (RISK_CLASS_ID, APPLICABLE_LEGISLATION_ID, PLACED_ON_THE_MARKET_ID,
+SPECIAL_DEVICE_TYPE_ID), which is what makes a device row resolvable.
+
+IDs arrive as JSON numbers and may be negative or non-integral, so they are
+normalised before use.
+
+A failed or unrecognised lookup is never fatal: the numeric id is reported
+instead of a label.
 """
 
 from .client import ApiError
 from .fields import index_row, pick
+
+# Device attribute -> the /reference CODE table that explains it.
+CODE_TABLES = {
+    "risk_class_id": "RISK_CLASS_ID",
+    "legislation_id": "APPLICABLE_LEGISLATION_ID",
+    "market_status_id": "PLACED_ON_THE_MARKET_ID",
+    "special_type_id": "SPECIAL_DEVICE_TYPE_ID",
+}
+
+# Device attribute holding the label -> attribute holding the numeric id.
+LABEL_FOR = {
+    "risk_class": "risk_class_id",
+    "legislation": "legislation_id",
+    "market_status": "market_status_id",
+    "special_type": "special_type_id",
+}
+
+
+def normalise_id(value):
+    """JSON numbers come through as floats; -101.0 and -101 must agree."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip()
+    return int(number) if number.is_integer() else number
 
 
 class Reference:
@@ -25,8 +53,8 @@ class Reference:
         self.client = client
         self.language = language
         self.verbose = verbose
-        self._by_id = {}
-        self.ambiguous = {}
+        self._values = {}        # (CODE, normalised ID) -> VALUE
+        self.tables = {}         # CODE -> number of entries
         self.loaded = False
         self.error = ""
 
@@ -41,54 +69,40 @@ class Reference:
             if self.verbose:
                 print(f"  reference lookup unavailable: {exc}", flush=True)
             return self
-        collected = {}
+
         for row in rows:
             i = index_row(row)
-            rid = pick(i, "ID", "id", default=None)
-            codev = pick(i, "CODE", "code")
-            if rid is None or not codev:
+            table = str(pick(i, "CODE", "code")).strip()
+            rid = normalise_id(pick(i, "ID", "id", default=None))
+            label = pick(i, "VALUE", "value")
+            if not table or rid is None or not label:
                 continue
-            try:
-                key = int(rid)
-            except (TypeError, ValueError):
-                key = str(rid)
-            collected.setdefault(key, set()).add(str(codev))
-
-        for key, codes in collected.items():
-            if len(codes) == 1:
-                self._by_id[key] = next(iter(codes))
-            else:
-                self.ambiguous[key] = sorted(codes)
+            self._values[(table, rid)] = str(label)
+            self.tables[table] = self.tables.get(table, 0) + 1
 
         self.loaded = True
         if self.verbose:
-            print(f"  reference: {len(self._by_id)} unambiguous code(s)", flush=True)
-        if self.ambiguous:
-            example = next(iter(self.ambiguous.items()))
-            print(f"  warning: {len(self.ambiguous)} reference id(s) map to several codes "
-                  f"and are left unresolved (e.g. {example}). /reference has no column "
-                  f"identifying which code table an id belongs to.", flush=True)
+            print(f"  reference: {len(self._values)} value(s) across "
+                  f"{len(self.tables)} table(s)", flush=True)
         return self
 
-    def label(self, value):
-        """Human code for a numeric id, or the id itself when unresolvable.
+    def label(self, table, value_id):
+        """Human label for an id within a code table.
 
-        Ambiguous ids (several codes share the id) resolve to the raw id, never
-        to an arbitrary pick among the candidates.
+        Falls back to the id itself, so an unknown table or id shows the raw
+        number rather than a wrong label or a blank.
         """
-        if value is None or value == "":
+        rid = normalise_id(value_id)
+        if rid is None:
             return ""
-        try:
-            hit = self._by_id.get(int(value))
-        except (TypeError, ValueError):
-            hit = self._by_id.get(str(value))
-        return hit or str(value)
+        hit = self._values.get((table, rid))
+        return hit if hit else str(rid)
 
     def enrich(self, device):
         """Fill blank label fields from their numeric ids, in place."""
-        pairs = (("risk_class", "risk_class_id"), ("legislation", "legislation_id"),
-                 ("market_status", "market_status_id"), ("special_type", "special_type_id"))
-        for label_attr, id_attr in pairs:
-            if not getattr(device, label_attr):
-                setattr(device, label_attr, self.label(getattr(device, id_attr)))
+        for label_attr, id_attr in LABEL_FOR.items():
+            if getattr(device, label_attr, ""):
+                continue
+            table = CODE_TABLES[id_attr]
+            setattr(device, label_attr, self.label(table, getattr(device, id_attr, None)))
         return device

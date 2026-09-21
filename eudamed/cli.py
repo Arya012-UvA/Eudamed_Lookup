@@ -39,10 +39,11 @@ def add_common(parser):
     conn.add_argument("--retries", type=int, default=4,
                       help="attempts per request, with exponential backoff (default 4)")
     conn.add_argument("--timeout", type=float, default=60)
+    conn.add_argument("--require-key", dest="require_key", action="store_true",
+                      help="refuse to run without a subscription key. Off by default: the live "
+                           "API answers anonymous requests, despite the spec declaring a key")
     conn.add_argument("--no-key", dest="require_key", action="store_false",
-                      help="attempt the request without a subscription key. The spec declares "
-                           "one is required, but an APIM export says that whether or not the "
-                           "product actually enforces a subscription, so this lets you find out")
+                      help="deprecated, kept for compatibility - this is now the default")
     conn.add_argument("--dry-run", action="store_true",
                       help="print the URLs that would be requested, then exit")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -55,25 +56,19 @@ def make_client(args):
 
 
 def require_key(client, args):
-    """Fail early and clearly rather than after a 401 per device.
+    """Whether to proceed without a subscription key.
 
-    --no-key opts out: the OpenAPI document declares a subscription key as
-    required, but an Azure APIM export carries that security block whether or
-    not the product actually enforces a subscription. Only a live call settles
-    it, so refusing to try would make the question unanswerable.
+    The OpenAPI document declares a key as required, but that block is an Azure
+    APIM portal artefact: the live gateway answers anonymous requests. Verified
+    against the real API - GET /udi and GET /reference both return 200 with no
+    credential, and /reference served 294 rows. So running without a key is the
+    default, and --require-key opts back in to the strict check.
     """
-    if client.key or args.dry_run:
+    if client.key or args.dry_run or not getattr(args, "require_key", False):
         return True
-    if not getattr(args, "require_key", True):
-        log("No subscription key - trying anyway (--no-key).")
-        log("  A 401/403 means a key really is required; a 200 means the API is open.")
-        return True
-    log("No subscription key. The EUDAMED Public API's OpenAPI document declares one "
-        f"(--key, or export {config.KEY_ENV}=...).")
-    log("Options:")
-    log("  --no-key   attempt the call anyway and find out whether it is actually enforced")
-    log("  get a key at https://developer.datalake.sante.service.ec.europa.eu")
-    log("  or test locally: python3 -m eudamed.fakeserver")
+    log("No subscription key, and --require-key was given.")
+    log(f"  Pass --key, or export {config.KEY_ENV}=..., or drop --require-key: "
+        "the live API does answer anonymous requests.")
     return False
 
 
@@ -133,7 +128,7 @@ def cmd_search(args):
 
     meta = {"base": client.base, "fields": args.fields, "format": args.fmt,
             "requests": client.request_count, "api_version": args.api_version,
-            "reference_loaded": bool(reference and reference._by_id),
+            "reference_loaded": bool(reference and reference.tables),
             "tool_version": __import__("eudamed").__version__}
     paths = write_all(results, args.out, meta)
 
@@ -201,6 +196,25 @@ def cmd_reference(args):
     except (ApiError, ValueError) as exc:
         log(str(exc))
         return EXIT_ERROR
+    if args.tables:
+        # /reference is one flat table keyed by (CODE, ID); CODE names the code
+        # table and VALUE holds the label.
+        from .fields import index_row, pick
+        tables = {}
+        for row in rows:
+            i = index_row(row)
+            tables.setdefault(str(pick(i, "CODE")), []).append(
+                (pick(i, "ID", default=None), pick(i, "VALUE")))
+        for code in sorted(tables):
+            entries = tables[code]
+            print(f"{code}  ({len(entries)} value(s))")
+            for rid, label in entries[:8]:
+                print(f"    {rid} = {label}")
+            if len(entries) > 8:
+                print(f"    ... {len(entries) - 8} more")
+        log(f"{len(tables)} code table(s), {len(rows)} row(s)")
+        return EXIT_OK
+
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:
             handle.write(body)
@@ -247,6 +261,14 @@ def cmd_probe(args):
         report[path] = {"rows": len(rows), "bytes": len(body), "fields": keys,
                         "sample": rows[0] if rows else None}
         log(f"  {len(rows)} row(s), {len(keys)} field(s)")
+
+        # A 200 with no rows is the confusing case: it could be an empty result,
+        # an unrecognised envelope, or an error delivered with a 200. Show the
+        # body, since at this size it is the whole answer.
+        if not rows:
+            snippet = body.strip()
+            log(f"  body ({len(body)} bytes): {snippet[:400]!r}")
+            report[path]["body"] = snippet[:1000]
         if args.raw_dir:
             os.makedirs(args.raw_dir, exist_ok=True)
             name = path.strip("/").replace("/", "_") + (".json" if args.fmt == "json" else ".csv")
@@ -256,7 +278,37 @@ def cmd_probe(args):
 
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
 
+    # If the filtered /udi call found nothing, try it unfiltered. That
+    # separates "this endpoint returns nothing at all" from "the filter matched
+    # nothing", which need completely different fixes.
     udi = report.get("/udi", {})
+    if udi.get("rows") == 0 and not args.dry_run:
+        log("")
+        log("/udi returned no rows - retrying with no filter to tell apart "
+            "an empty endpoint from an unmatched filter")
+        try:
+            rows, body = client.request("/udi", {})
+            report["/udi (no filter)"] = {
+                "rows": len(rows), "bytes": len(body),
+                "fields": describe_keys(rows),
+                "sample": rows[0] if rows else None,
+                "body": None if rows else body.strip()[:1000],
+            }
+            log(f"  unfiltered: {len(rows)} row(s), {len(body)} bytes")
+            if rows:
+                log("  -> the endpoint has data, so TRADE_NAME matched nothing. Either the "
+                    "device is not registered under that name, or the filter needs a "
+                    "different form (try --fields DEVICE_NAME, or a shorter term).")
+                log(f"  -> fields: {', '.join(describe_keys(rows))}")
+            else:
+                log(f"  -> the endpoint returns nothing even unfiltered. Body: "
+                    f"{body.strip()[:200]!r}")
+                log("     This looks like the dataset is not exposed here, not a search problem.")
+        except AuthError as exc:
+            log(str(exc))
+        except (ApiError, ValueError) as exc:
+            log(f"  unfiltered probe failed: {exc}")
+
     if udi.get("fields"):
         log("")
         log("/udi response fields:")
@@ -355,6 +407,8 @@ def build_parser():
     ref.add_argument("--code")
     ref.add_argument("--language", default="en")
     ref.add_argument("--out", help="write the raw response to this file")
+    ref.add_argument("--tables", action="store_true",
+                     help="summarise the code tables (CODE values) instead of the rows")
     add_common(ref)
     ref.set_defaults(func=cmd_reference)
 

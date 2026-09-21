@@ -47,28 +47,28 @@ export EUDAMED_SUBSCRIPTION_KEY=your-key-here
 
 Keys are never printed: they are redacted to `<key>` in all log and error output.
 
-### Do you actually need one?
+### Do you actually need one? No.
 
-The OpenAPI document says yes, but that is weaker evidence than it looks. It is
-an Azure APIM export, and APIM emits this `security` block according to how the
-*portal* is configured — which is not the same as whether the product enforces a
-subscription at the gateway. Only a live call settles it, so `--no-key` issues
-the request without a credential:
+**Verified against the live API: no subscription key is required.** Anonymous
+requests are answered:
 
-```bash
-python3 -m eudamed probe --trade-name MindDoc --no-key -v
 ```
+GET /udi?TRADE_NAME=MindDoc&format=json&api-version=v1.0   -> 200
+GET /reference?LANGUAGE=en&format=json&api-version=v1.0    -> 200, 294 rows
+```
+
+The `security` block in the OpenAPI document is an Azure APIM portal artefact
+and does not reflect what the gateway enforces. Running without a key is
+therefore the default; `--require-key` opts back in to a strict pre-flight
+check, and `--key` still works if you have one.
+
+If a request does fail, distinguish the cause:
 
 | Response | Meaning |
 | --- | --- |
-| `200` with rows | The API is open. No key needed; carry on without one |
-| `401` / `403` | A key really is enforced. Get one from the portal |
+| `401` / `403` from the API | A key is being enforced after all |
 | `404` | Wrong path — check `--base` ends in `/eudamed` |
 | `Tunnel connection failed` / proxy error | A proxy on your network refused it. **Not** the API rejecting a key |
-
-That last row matters: a proxy `CONNECT` refusal surfaces as `403` and reads
-like an authentication failure. Both the CLI and the web UI now say explicitly
-when a failure came from a proxy rather than from the API.
 
 ## Commands
 
@@ -190,7 +190,7 @@ MindDoc,Software for psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-00002512
 | `--format` | `json` | `json` or `csv` — the API supports both |
 | `--auth-mode` | `header` | Where to put the subscription key |
 | `--no-resolve-codes` | off | Skip the `/reference` call that turns numeric ids into codes |
-| `--no-key` | off | Issue the request with no credential, to test whether one is enforced |
+| `--require-key` | off | Refuse to run without a key. Off by default: the live API is open |
 | `--dry-run` | off | Print the URLs that would be requested, then exit. Needs no key |
 | `--delay` | `0.2` | Minimum seconds between requests |
 | `--retries` | `4` | Attempts per request, with exponential backoff |
@@ -270,7 +270,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 177 tests
+pytest -q          # 182 tests
 ruff check eudamed tests
 ```
 
@@ -359,11 +359,23 @@ These are properties of the published spec, not of this tool:
    operation. How the API caps large result sets is unknown; a broad search may
    be silently truncated. `results.json` records the row count per query so a
    suspicious round number is visible.
-3. **`/reference` has no code-table column.** Only `ID`, `CODE`, `LANGUAGE`. If
-   risk-class id 1 and legislation id 1 are different things, a flat `ID → CODE`
-   map mislabels fields. This tool therefore **refuses to resolve an id that maps
-   to more than one code**, reports the ambiguity, and shows the numeric id
-   instead of guessing.
+3. **`/reference` returns four columns, not three.** The spec lists `ID`, `CODE`
+   and `LANGUAGE` as *query* parameters, which suggested a flat `ID → CODE` map
+   with no way to tell code tables apart. The real response has a fourth column
+   and a different meaning:
+
+   ```json
+   {"ID": -101.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en", "VALUE": "Israel"}
+   ```
+
+   `CODE` names the **code table** — and the names match the numeric `/udi`
+   query parameters — while `VALUE` holds the label. So the table is keyed by
+   `(CODE, ID)`, ids repeat across tables, and a lookup keyed on `ID` alone
+   mislabels fields. Inspect the tables with:
+
+   ```bash
+   python3 -m eudamed reference --tables
+   ```
 4. **`api-version` is undeclared** as a parameter, though the portal's own
    request template requires it and `servers.url` is unversioned. Sent by
    default; `--api-version ''` omits it.
@@ -390,7 +402,7 @@ eudamed/
   cli.py          argparse CLI: search, actors, reference, probe, serve
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            177 tests, no network required
+tests/            182 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

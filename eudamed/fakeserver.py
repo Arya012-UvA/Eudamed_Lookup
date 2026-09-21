@@ -29,8 +29,8 @@ DEVICES = [
     {"PRIMARY_DI": "04260703120019", "BASIC_UDI": "426070312MINDDOC01",
      "TRADE_NAME": "MindDoc", "DEVICE_NAME": "MindDoc depression therapy software",
      "DEVICE_MODEL": "", "REFERENCE": "MD-1", "NOMENCLATURE_CODE": "Z12010203",
-     "RISK_CLASS_ID": 2, "APPLICABLE_LEGISLATION_ID": 10, "PLACED_ON_THE_MARKET_ID": 20,
-     "SPECIAL_DEVICE_TYPE_ID": 30, "MF_SRN": "DE-MF-000025123",
+     "RISK_CLASS_ID": 2, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": 1, "MF_SRN": "DE-MF-000025123",
      "MF_NAME": "MindDoc Health GmbH", "MEDICAL_PURPOSE": "Treatment of depression",
      "UUID": "11111111-1111-1111-1111-111111111111", "LATEST_VERSION": True,
      "VERSION_NUMBER": 3},
@@ -39,24 +39,24 @@ DEVICES = [
     {"PRIMARY_DI": "04260703120026", "BASIC_UDI": "426070312MOODPATH1",
      "TRADE_NAME": "Moodpath", "DEVICE_NAME": "Moodpath mood tracking",
      "DEVICE_MODEL": "", "REFERENCE": "MP-1", "NOMENCLATURE_CODE": "Z12010203",
-     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 10, "PLACED_ON_THE_MARKET_ID": 20,
-     "SPECIAL_DEVICE_TYPE_ID": 30, "MF_SRN": "DE-MF-000025123",
+     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": 1, "MF_SRN": "DE-MF-000025123",
      "MF_NAME": "MindDoc Health GmbH", "MEDICAL_PURPOSE": "Mood assessment",
      "UUID": "22222222-2222-2222-2222-222222222222", "LATEST_VERSION": True,
      "VERSION_NUMBER": 1},
     {"PRIMARY_DI": "04260703120033", "BASIC_UDI": "426070312KALMEDA01",
      "TRADE_NAME": "Kalmeda", "DEVICE_NAME": "Kalmeda tinnitus therapy app",
      "DEVICE_MODEL": "", "REFERENCE": "KA-1", "NOMENCLATURE_CODE": "Z12010299",
-     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 10, "PLACED_ON_THE_MARKET_ID": 20,
-     "SPECIAL_DEVICE_TYPE_ID": 30, "MF_SRN": "DE-MF-000099001",
+     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": 1, "MF_SRN": "DE-MF-000099001",
      "MF_NAME": "mynoise GmbH", "MEDICAL_PURPOSE": "Tinnitus therapy",
      "UUID": "33333333-3333-3333-3333-333333333333", "LATEST_VERSION": True,
      "VERSION_NUMBER": 2},
     {"PRIMARY_DI": "08594213450017", "BASIC_UDI": "859421345VITADIO1",
      "TRADE_NAME": "Vitadio", "DEVICE_NAME": "Vitadio diabetes therapy",
      "DEVICE_MODEL": "", "REFERENCE": "VI-1", "NOMENCLATURE_CODE": "Z12010204",
-     "RISK_CLASS_ID": 2, "APPLICABLE_LEGISLATION_ID": 10, "PLACED_ON_THE_MARKET_ID": 20,
-     "SPECIAL_DEVICE_TYPE_ID": 30, "MF_SRN": "CZ-MF-000077001",
+     "RISK_CLASS_ID": 2, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": 1, "MF_SRN": "CZ-MF-000077001",
      "MF_NAME": "Vitadio s.r.o.", "MEDICAL_PURPOSE": "Type 2 diabetes therapy",
      "UUID": "44444444-4444-4444-4444-444444444444", "LATEST_VERSION": True,
      "VERSION_NUMBER": 1},
@@ -72,22 +72,24 @@ ACTORS = [
 ]
 
 REFERENCE = [
-    # Distinct id ranges per code table. The spec gives /reference no column
-    # saying which table an id belongs to, so this layout is a guess - it is
-    # exactly the ambiguity the Reference resolver refuses to paper over.
-    {"ID": 1, "CODE": "CLASS_I", "LANGUAGE": "en"},
-    {"ID": 2, "CODE": "CLASS_IIA", "LANGUAGE": "en"},
-    {"ID": 3, "CODE": "CLASS_IIB", "LANGUAGE": "en"},
-    {"ID": 4, "CODE": "CLASS_III", "LANGUAGE": "en"},
-    {"ID": 10, "CODE": "MDR", "LANGUAGE": "en"},
-    {"ID": 11, "CODE": "IVDR", "LANGUAGE": "en"},
-    {"ID": 20, "CODE": "ON_THE_MARKET", "LANGUAGE": "en"},
-    {"ID": 21, "CODE": "NO_LONGER_PLACED", "LANGUAGE": "en"},
-    {"ID": 30, "CODE": "NONE", "LANGUAGE": "en"},
-    # A deliberate collision, so the ambiguity path is exercised by the tests:
-    # one id, two different codes, therefore not resolvable.
-    {"ID": 99, "CODE": "AMBIGUOUS_A", "LANGUAGE": "en"},
-    {"ID": 99, "CODE": "AMBIGUOUS_B", "LANGUAGE": "en"},
+    # Real /reference shape, confirmed against the live API: the table is keyed
+    # by (CODE, ID) and VALUE holds the label. CODE names the code table and
+    # matches a numeric /udi query parameter. IDs arrive as JSON numbers and
+    # may be negative.
+    {"ID": 1.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class I"},
+    {"ID": 2.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class IIa"},
+    {"ID": 3.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class IIb"},
+    {"ID": 4.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class III"},
+    # The same ids mean different things in a different table - which is why a
+    # lookup keyed on ID alone produces wrong labels.
+    {"ID": 1.0, "CODE": "APPLICABLE_LEGISLATION_ID", "LANGUAGE": "en",
+     "VALUE": "Regulation (EU) 2017/745"},
+    {"ID": 2.0, "CODE": "APPLICABLE_LEGISLATION_ID", "LANGUAGE": "en",
+     "VALUE": "Regulation (EU) 2017/746"},
+    {"ID": 1.0, "CODE": "SPECIAL_DEVICE_TYPE_ID", "LANGUAGE": "en", "VALUE": "None"},
+    {"ID": -101.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en", "VALUE": "Israel"},
+    {"ID": 1.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en", "VALUE": "Germany"},
+    {"ID": 2.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en", "VALUE": "Czechia"},
 ]
 
 TABLES = {"/udi": (DEVICES, config.UDI_PARAMS),

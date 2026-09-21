@@ -154,16 +154,55 @@ def test_response_fields_are_reported(client_factory):
 
 
 def test_reference_labels_are_applied(client_factory):
-    ref = Reference(client_factory(opener=json_opener(
-        [{"ID": 1, "CODE": "CLASS_I"}, {"ID": 2, "CODE": "CLASS_IIA"}]))).load()
+    """Real shape: (CODE, ID) -> VALUE, where CODE names the code table."""
+    ref = Reference(client_factory(opener=json_opener([
+        {"ID": 1.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class I"},
+        {"ID": 2.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class IIa"},
+    ]))).load()
     client = client_factory(opener=json_opener(ROWS))
     result = search_target(client, Target("MindDoc", keys=["MindDoc"]), reference=ref)
-    assert result["candidates"][0]["risk_class"] == "CLASS_IIA"
+    assert result["candidates"][0]["risk_class"] == "Class IIa"
+
+
+def test_reference_disambiguates_by_code_table(client_factory):
+    """The same id means different things in different tables. A lookup keyed on
+    ID alone - which is what this resolver used to do - mislabels fields."""
+    ref = Reference(client_factory(opener=json_opener([
+        {"ID": 1.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class I"},
+        {"ID": 1.0, "CODE": "APPLICABLE_LEGISLATION_ID", "LANGUAGE": "en",
+         "VALUE": "Regulation (EU) 2017/745"},
+        {"ID": -101.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en",
+         "VALUE": "Israel"},
+    ]))).load()
+    assert ref.label("RISK_CLASS_ID", 1) == "Class I"
+    assert ref.label("APPLICABLE_LEGISLATION_ID", 1) == "Regulation (EU) 2017/745"
+    assert ref.label("PLACED_ON_THE_MARKET_ID", -101.0) == "Israel"
+    assert set(ref.tables) == {"RISK_CLASS_ID", "APPLICABLE_LEGISLATION_ID",
+                               "PLACED_ON_THE_MARKET_ID"}
+
+
+def test_reference_normalises_numeric_ids(client_factory):
+    """IDs arrive as JSON floats and may be negative; -101.0 must equal -101."""
+    from eudamed.reference import normalise_id
+    assert normalise_id(-101.0) == normalise_id(-101) == -101
+    assert normalise_id("2") == 2
+    assert normalise_id(None) is None
+    assert normalise_id(2.5) == 2.5
 
 
 def test_reference_failure_is_not_fatal(client_factory):
     ref = Reference(client_factory(opener=error_opener(500), retries=1)).load()
-    assert ref.error and ref.label(2) == "2"        # falls back to the raw id
+    assert ref.error
+    assert ref.label("RISK_CLASS_ID", 2) == "2"     # falls back to the raw id
+
+
+def test_reference_unknown_id_falls_back_to_the_number(client_factory):
+    ref = Reference(client_factory(opener=json_opener([
+        {"ID": 1.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class I"},
+    ]))).load()
+    assert ref.label("RISK_CLASS_ID", 99) == "99"
+    assert ref.label("NO_SUCH_TABLE", 1) == "1"
+    assert ref.label("RISK_CLASS_ID", None) == ""
 
 
 # --- writers ----------------------------------------------------------

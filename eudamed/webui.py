@@ -153,11 +153,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ApiError, ValueError) as exc:
             self._json(502, {"error": "api", "detail": str(exc)})
             return
-        # Only warn when a candidate in THIS result actually carries an
-        # unresolved code, not merely because the reference table has some
-        # ambiguous id somewhere.
-        if reference is not None and reference.ambiguous and _has_unresolved_codes(result):
-            result["reference_ambiguous"] = {str(k): v for k, v in reference.ambiguous.items()}
+        # Warn only when a candidate in THIS result still shows a bare numeric
+        # id, i.e. /reference had no entry for it.
+        if reference is not None and _has_unresolved_codes(result):
+            result["unresolved_codes"] = True
         self._json(200, result)
 
     def _actors(self, query):
@@ -449,10 +448,10 @@ function render(d) {
     html += `<p class="sub">No candidate scored above the minimum. Try enabling DEVICE_NAME
       under Options, lowering the minimum score, or a different spelling.</p>`;
   }
-  if (d.reference_ambiguous) {
-    html += `<div class="banner">Some numeric codes could not be resolved: /reference reuses ids
-      across code tables and has no column saying which table an id belongs to, so the raw id is
-      shown rather than a possibly wrong label.</div>`;
+  if (d.unresolved_codes) {
+    html += `<div class="banner">Some coded fields still show a numeric id: /reference had no
+      entry for that id in the relevant code table, so the raw number is shown rather than a
+      guessed label.</div>`;
   }
   html += d.candidates.map(c => card(c, d.name)).join("");
   const qs = (d.queries || []).map(q =>
