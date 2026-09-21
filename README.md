@@ -134,6 +134,19 @@ Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated
 an identifier match rather than a name comparison, so pasting an SRN lists
 every device that manufacturer has registered.
 
+**Local cache panel.** Because `/udi` filters are exact-match, a live name
+search returns nothing for a near-miss — and the page says so rather than
+letting it read as "not registered". Pick a partition field, press **Build
+cache**, and tick **Match against cache**; approximate names then match
+locally. An incomplete cache (any partition truncated at 1000 rows) is flagged,
+and a "not found" against it is explicitly not treated as evidence of absence.
+
+Preload a cache built by `scan` so it works from the first request:
+
+```bash
+python3 -m eudamed serve --input devices.csv --cache cache/udi.jsonl
+```
+
 **Downloads.** After any search a download bar offers `report.md`, `results.csv`
 and `results.json` for that device, plus the whole loaded list as Markdown.
 These are produced by the same writers the CLI uses, so a document downloaded
@@ -335,7 +348,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 222 tests
+pytest -q          # 229 tests
 ruff check eudamed tests
 ```
 
@@ -539,7 +552,7 @@ eudamed/
   cache.py        local row cache, since the API cannot be searched fuzzily
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            222 tests, no network required
+tests/            229 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

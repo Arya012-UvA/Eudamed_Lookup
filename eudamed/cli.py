@@ -381,13 +381,26 @@ def cmd_serve(args):
             log(f"cannot read --input: {exc}")
             return EXIT_USAGE
 
+    cache = None
+    if args.cache:
+        try:
+            cache = RowCache.load(args.cache)
+        except (OSError, ValueError) as exc:
+            log(f"cannot read --cache: {exc}")
+            return EXIT_USAGE
+
     server = make_server(client, port=args.port, host=args.host,
-                         verbose=args.verbose, targets=targets)
+                         verbose=args.verbose, targets=targets, cache=cache)
     url = f"http://{args.host}:{args.port}"
     log(f"EUDAMED search UI on {url}")
     log(f"  querying {client.base}")
     if targets:
         log(f"  {len(targets)} device(s) loaded from {args.input}")
+    if cache is not None:
+        log(f"  {len(cache)} cached row(s) from {args.cache}")
+        if cache.truncated_partitions:
+            log(f"  note: {len(cache.truncated_partitions)} partition(s) were truncated, "
+                "so the cache is incomplete")
     log("  press Ctrl-C to stop")
     if args.open_browser:
         import webbrowser
@@ -800,6 +813,8 @@ def build_parser():
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--input", help="CSV of devices to offer in the UI as a "
                                     "clickable list and a 'Run all' batch")
+    ui.add_argument("--cache", help="preload a cache built by `scan`, so the UI can match "
+                                    "approximate names straight away")
     ui.add_argument("--no-open", dest="open_browser", action="store_false",
                     help="do not open a browser automatically")
     add_common(ui)

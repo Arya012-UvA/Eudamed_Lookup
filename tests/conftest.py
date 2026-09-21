@@ -108,6 +108,23 @@ class UIClient:
         return json.loads(self._open(path)[1])
 
 
+@pytest.fixture
+def ui_server_fresh(live_server):
+    """A UI server with no cache, for the empty-cache paths."""
+    from eudamed.webui import serve as make_ui
+
+    client = Client(base=live_server, key="dummy", delay=0, backoff_base=0)
+    server = make_ui(client, port=0)
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        yield UIClient(f"http://{host}:{port}")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @pytest.fixture(scope="session")
 def ui_server(live_server):
     """The web UI on an ephemeral port, backed by the fake API.

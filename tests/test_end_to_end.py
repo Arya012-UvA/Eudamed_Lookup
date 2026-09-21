@@ -716,3 +716,79 @@ def test_search_reports_an_unreadable_cache(tmp_path, capsys):
     assert main(["search", "--input", str(csv_path), "--cache", str(bad),
                  "--out", str(tmp_path / "r")]) == EXIT_USAGE
     assert "cannot read --cache" in capsys.readouterr().err
+
+
+# --- the cache in the web UI --------------------------------------------
+def test_ui_starts_with_no_cache_and_says_filters_are_exact(ui_server_fresh):
+    health = ui_server_fresh.json("/api/health")
+    assert health["cache"]["rows"] == 0 and health["cache"]["loaded"] is False
+    # The page must explain exact matching, or a near-miss reads as "absent".
+    assert health["exact_match_filters"] is True
+    page = ui_server_fresh.text("/")
+    assert "exact match" in page and "Match against cache" in page
+
+
+def test_ui_cache_search_is_refused_before_a_cache_exists(ui_server_fresh):
+    assert ui_server_fresh.status("/api/search?name=MindDoc&use_cache=1") == 400
+
+
+def test_ui_builds_a_cache_and_then_matches_approximately(ui_server_fresh):
+    """The decisive behaviour: an approximate name finds nothing live, because
+    /udi filters are exact, and is found once rows are held locally."""
+    live = ui_server_fresh.json("/api/search?name=Mind+Doc")
+    assert live["status"] == "not found" and live["candidates"] == []
+
+    built = ui_server_fresh.json("/api/cache/build?partition_by=RISK_CLASS_ID")
+    assert built["rows"] > 0 and built["loaded"] is True
+    assert len(built["partitions"]) >= 2
+
+    cached = ui_server_fresh.json("/api/search?name=Mind+Doc&use_cache=1")
+    assert cached["status"] == "found"
+    assert cached["candidates"][0]["trade_name"] == "MindDoc"
+    assert cached["queries"][0]["param"] == "local cache"
+    assert cached["cache"]["rows"] == built["rows"]
+
+
+def test_ui_cache_build_accepts_explicit_filters(ui_server_fresh):
+    built = ui_server_fresh.json("/api/cache/build?filter=RISK_CLASS_ID%3D2")
+    assert built["rows"] > 0
+    assert built["partitions"][0]["filter"] == {"RISK_CLASS_ID": "2"}
+
+
+def test_ui_cache_build_rejects_undocumented_fields(ui_server_fresh):
+    assert ui_server_fresh.status("/api/cache/build?partition_by=tradeName") == 400
+    assert ui_server_fresh.status("/api/cache/build?filter=tradeName%3DX") == 400
+
+
+def test_ui_report_download_can_use_the_cache(ui_server_fresh):
+    ui_server_fresh.json("/api/cache/build?partition_by=RISK_CLASS_ID")
+    md = ui_server_fresh.text("/api/report?name=Mind+Doc&format=md&use_cache=1")
+    assert "## Mind Doc" in md
+    assert "local cache" in md          # provenance is recorded in the document
+
+
+def test_serve_can_preload_a_cache(live_server, tmp_path, capsys):
+    """--cache lets the UI match approximate names from the first request."""
+    cache_file = tmp_path / "c.jsonl"
+    main(["scan", "--base", live_server, "--out", str(cache_file),
+          "--delay", "0", "--retries", "1"])
+    import threading
+
+    from eudamed.cache import RowCache
+    from eudamed.client import Client
+    from eudamed.webui import serve as make_ui
+    cache = RowCache.load(str(cache_file))
+    server = make_ui(Client(base=live_server, key="dummy", delay=0, backoff_base=0),
+                     port=0, cache=cache)
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        from conftest import UIClient
+        ui = UIClient(f"http://{host}:{port}")
+        assert ui.json("/api/cache")["rows"] == len(cache)
+        d = ui.json("/api/search?name=Mind+Doc&use_cache=1")
+        assert d["candidates"][0]["trade_name"] == "MindDoc"
+    finally:
+        server.shutdown()
+        server.server_close()
