@@ -72,6 +72,24 @@ def make_client(args):
                   verbose=args.verbose, api_version=args.api_version)
 
 
+def make_widen_client(args):
+    """The substring-search fallback client, or None when it does not apply.
+
+    Uses getattr throughout because not every subcommand defines every flag -
+    `serve` has no --widen-page-size, for instance - mirroring how
+    make_client already reads --page-size.
+    """
+    if getattr(args, "backend", "datalake") != "datalake":
+        return None                      # --backend ui is already substring
+    if not getattr(args, "widen", True) or getattr(args, "dry_run", False):
+        return None
+    return UiClient(base=getattr(args, "widen_base", None),
+                    delay=args.delay, retries=args.retries, timeout=args.timeout,
+                    verbose=args.verbose,
+                    page_size=getattr(args, "widen_page_size", 100),
+                    max_pages=getattr(args, "widen_max_pages", 2))
+
+
 def require_key(client, args):
     """Whether to proceed without a subscription key.
 
@@ -142,15 +160,21 @@ def cmd_search(args):
         log("loading reference codes")
         reference = Reference(client, language=args.language, verbose=args.verbose).load()
 
+    widen_client = make_widen_client(args)
+    if widen_client is not None:
+        log(f"  substring fallback ready ({widen_client.base}) for devices not found")
+
     try:
         results = run(client, targets, reference=reference, top=args.top,
                       min_score=args.min_score, fields=args.fields,
-                      keep_raw=args.keep_raw, progress=log)
+                      keep_raw=args.keep_raw, progress=log,
+                      widen_client=widen_client)
     except AuthError as exc:
         log(str(exc))
         return EXIT_AUTH
 
     meta = {"base": client.base, "backend": args.backend,
+            "widen_requests": widen_client.request_count if widen_client else 0,
             "fields": args.fields, "format": args.fmt,
             "requests": client.request_count, "api_version": args.api_version,
             "reference_loaded": bool(reference and reference.tables),
@@ -374,13 +398,17 @@ def cmd_serve(args):
             log(f"cannot read --input: {exc}")
             return EXIT_USAGE
 
+    widen_client = make_widen_client(args)
     server = make_server(client, port=args.port, host=args.host,
-                         verbose=args.verbose, targets=targets)
+                         verbose=args.verbose, targets=targets,
+                         widen_client=widen_client)
     url = f"http://{args.host}:{args.port}"
     log(f"EUDAMED search UI on {url}")
     log(f"  querying {client.base}  (--backend {args.backend})")
     if targets:
         log(f"  {len(targets)} device(s) loaded from {args.input}")
+    if widen_client is not None:
+        log(f"  substring fallback ready ({widen_client.base}) for devices not found")
     log("  press Ctrl-C to stop")
     if args.open_browser:
         import webbrowser
@@ -682,6 +710,18 @@ def build_parser():
     search.add_argument("--no-resolve-codes", dest="resolve_codes", action="store_false",
                         help="skip the /reference call that turns numeric ids into codes")
     search.add_argument("--language", default="en", help="language for /reference labels")
+    search.add_argument("--no-widen", dest="widen", action="store_false",
+                        help="do not fall back to substring search when a device "
+                             "is not found. The documented API matches names exactly, "
+                             "so the fallback is what finds a device registered under "
+                             "a longer name")
+    search.add_argument("--widen-base", default=None,
+                        help=f"base URL for the substring fallback "
+                             f"(default {DEFAULT_UI_BASE})")
+    search.add_argument("--widen-page-size", type=int, default=100,
+                        help="rows per page for the substring fallback")
+    search.add_argument("--widen-max-pages", type=int, default=2,
+                        help="pages to walk per term in the substring fallback")
     search.add_argument("--page-size", type=int, default=100,
                         help="rows per page (ui backend only)")
     search.add_argument("--max-pages", type=int, default=5,
@@ -724,6 +764,12 @@ def build_parser():
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--input", help="CSV of devices to offer in the UI as a "
                                     "clickable list and a 'Run all' batch")
+    ui.add_argument("--no-widen", dest="widen", action="store_false",
+                    help="do not fall back to substring search when a device is "
+                         "not found")
+    ui.add_argument("--widen-base", default=None,
+                    help=f"base URL for the substring fallback "
+                         f"(default {DEFAULT_UI_BASE})")
     ui.add_argument("--no-open", dest="open_browser", action="store_false",
                     help="do not open a browser automatically")
     add_common(ui)

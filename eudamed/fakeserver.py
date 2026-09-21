@@ -55,6 +55,20 @@ DEVICES = [
      "MF_NAME": "mynoise GmbH", "MEDICAL_PURPOSE": "Tinnitus therapy",
      "UUID": "33333333-3333-3333-3333-333333333333", "LATEST_VERSION": True,
      "VERSION_NUMBER": 2},
+    # A device whose TRADE_NAME and DEVICE_NAME BOTH differ from the term a
+    # user would search for, shaped like the real PINK! Coach gap. Exact
+    # matching cannot reach it; only substring search on the broad term can.
+    {"PRIMARY_DI": "04260999000012", "BASIC_UDI": "426099900PINKCOACH",
+     "TRADE_NAME": "PINK Coach - Breast Cancer Companion",
+     "DEVICE_NAME": "PINK Coach App",
+     "DEVICE_MODEL": "", "REFERENCE": "PC-1", "NOMENCLATURE_CODE": "Z12010205",
+     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": 1, "DEVICE_STATUS_TYPE_ID": 1,
+     "MF_SRN": "DE-MF-000031007",
+     "MF_NAME": "PINK gegen Brustkrebs GmbH",
+     "MEDICAL_PURPOSE": "Support for breast cancer patients",
+     "UUID": "55555555-5555-5555-5555-555555555555", "LATEST_VERSION": True,
+     "VERSION_NUMBER": 1},
     {"PRIMARY_DI": "08594213450017", "BASIC_UDI": "859421345VITADIO1",
      "TRADE_NAME": "Vitadio", "DEVICE_NAME": "Vitadio diabetes therapy",
      "DEVICE_MODEL": "", "REFERENCE": "VI-1", "NOMENCLATURE_CODE": "Z12010204",

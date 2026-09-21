@@ -7,7 +7,7 @@ import re
 import time
 
 CSV_FIELDS = [
-    "name", "ca", "expected_country", "status", "score", "matched_on",
+    "name", "ca", "expected_country", "status", "score", "matched_on", "matched_via",
     "trade_name", "device_name", "manufacturer_name", "mf_srn", "manufacturer_country",
     "risk_class", "legislation", "device_status", "placed_on_market", "special_type",
     "primary_di", "basic_udi", "nomenclature_code", "medical_purpose",
@@ -86,7 +86,8 @@ MD_SECTIONS = [
         ("Authorised rep. SRN", "authorised_rep_srn"),
     ]),
     ("Match provenance", [
-        ("Score", "score"), ("Evidence", "matched_on"), ("EUDAMED link", "link"),
+        ("Score", "score"), ("Evidence", "matched_on"),
+        ("Found via", "matched_via"), ("EUDAMED link", "link"),
     ]),
 ]
 
@@ -109,6 +110,8 @@ def write_markdown(results, path, meta=None):
         add(f"- Searched on: `{meta['fields']}`")
     add(f"- Devices in this report: {len(results)}")
     add(f"- Requests issued: {meta.get('requests', '?')}")
+    if meta.get("widen_requests"):
+        add(f"- Substring-fallback requests: {meta['widen_requests']}")
     add("")
     add("> Scores rank candidates; they do not confirm registration. Verify every")
     add("> match through its EUDAMED link before relying on it.")
@@ -339,7 +342,8 @@ const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Mode
 ["Placed on market","placed_on_market"],
 ["Special type","special_type"],["UDI-DI","primary_di"],["Basic UDI-DI","basic_udi"],
 ["EMDN / nomenclature","nomenclature_code"],["Medical purpose","medical_purpose"],
-["Reference","reference"],["Version","version"],["Score","score"],["Evidence","matched_on"]];
+["Reference","reference"],["Version","version"],["Score","score"],["Evidence","matched_on"],
+["Found via","matched_via"]];
 function chip(c){
   const m = c.matched_on || "none";
   return `<span class="chip${m === "manufacturer" ? " mfr" : ""}">${esc(m)}</span>`;

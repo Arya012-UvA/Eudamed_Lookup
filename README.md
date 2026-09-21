@@ -382,7 +382,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 246 tests
+pytest -q          # 254 tests
 ruff check eudamed tests
 ```
 
@@ -480,8 +480,8 @@ matters for searching by name.
 | Documented | no — can change without notice | yes, OpenAPI |
 | Credential | none | none needed in practice |
 
-**`datalake` is the default everywhere**, including for name searches, because
-exact matching turns out not to be the obstacle it looks like. Searching every
+**`datalake` is the default everywhere**, with an automatic substring fallback
+(below), because exact matching turns out not to be the obstacle it looks like. Searching every
 name-bearing field at once is what makes it work:
 
 > MindDoc is registered with `TRADE_NAME` = `MindDoc: Your Companion` and
@@ -494,7 +494,40 @@ product name can appear in — and `--min-score` defaults to `0.0`: filters are 
 always a real hit, and a score floor mostly discards good matches. Against the
 real register this configuration finds the large majority of a 23-device list.
 
-`--backend ui` is available when you want genuine substring search — it is the
+### The substring fallback
+
+For the devices exact matching still cannot reach, `search` and `serve`
+automatically retry through the `ui` backend — but only for devices the
+primary pass did not find, so the cost is bounded:
+
+```
+searching "PINK! Coach"
+  TRADE_NAME=PINK! Coach   -> 0 rows   (exact, documented API)
+  DEVICE_NAME=PINK! Coach  -> 0 rows
+  TRADE_NAME=PINK! Coach   -> 0 rows   (substring, ui backend)
+  TRADE_NAME=pink coach    -> 1 row    <- found
+```
+
+Note the last probe. Substring matching still needs the term to *be* a
+substring, and `PINK! Coach` is not contained in
+`PINK Coach - Breast Cancer Companion` because of the `!`. So the fallback
+also tries the **normalised** form of each term (punctuation collapsed,
+lowercased). That matters most in the browser, where a typed name has no
+`broad` terms to fall back on.
+
+Every fallback hit is tagged **`matched_via: ui-substring`** in the JSON, CSV
+and Markdown, and carries a `found via substring` chip plus a provenance note
+in the browser — so a hit from the undocumented backend is never mistaken for
+a confirmed exact match on the documented one.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--no-widen` | fallback on | Turn the fallback off; exact matching only |
+| `--widen-base` | the ui backend | Point the fallback at another host |
+| `--widen-page-size` | `100` | Rows per page for the fallback |
+| `--widen-max-pages` | `2` | Pages per term for the fallback |
+
+`--backend ui` is still available when you want genuine substring search — it is the
 only way to find a device whose registered strings all differ from the name you
 have:
 
@@ -632,7 +665,7 @@ eudamed/
   ui_backend.py   the EUDAMED website's backend: substring search, paginated
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            246 tests, no network required
+tests/            254 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

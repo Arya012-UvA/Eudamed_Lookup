@@ -15,9 +15,11 @@ import pytest
 
 from eudamed.cli import EXIT_AUTH, EXIT_OK, EXIT_USAGE, main
 
-#: These tests target the documented datalake API. The name-driven commands
-#: default to the web-UI backend, so it is pinned explicitly here.
-DL = ("--backend", "datalake")
+#: These tests target the documented datalake API's exact-match behaviour, so
+#: the substring fallback is pinned off - otherwise every "not found" case
+#: would reach for the real web-UI host and change what is being asserted.
+#: The fallback has its own tests, which pass --widen-base explicitly.
+DL = ("--backend", "datalake", "--no-widen")
 
 
 def test_search_single_device(live_server, tmp_path, capsys):
@@ -823,3 +825,158 @@ def test_shipped_psych_term_list_is_usable():
     assert all(" " not in s for s in stems)
     for expected in ("depress", "anxiet", "psych", "mental"):
         assert expected in stems
+
+
+# --- the substring fallback (auto-widen) --------------------------------
+#: A device whose trade name AND device name both differ from the search term,
+#: so only the substring fallback can reach it.
+PINK_CSV = "name,country,keys,broad\nPINK! Coach,DE,PINK! Coach,PINK\n"
+
+
+def test_widen_recovers_a_device_exact_match_cannot_reach(live_server, tmp_path):
+    """The whole point: exact matching on both name columns misses this
+    device, and the substring fallback finds it via the broad term."""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text(PINK_CSV, encoding="utf-8")
+
+    out = tmp_path / "widened"
+    assert main(["search", "--backend", "datalake", "--base", live_server,
+                 "--key", "dummy", "--widen-base", live_server,
+                 "--input", str(csv_path), "--out", str(out),
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    assert result["status"] == "found"
+    best = result["candidates"][0]
+    assert best["trade_name"] == "PINK Coach - Breast Cancer Companion"
+    assert best["matched_via"] == "ui-substring"      # provenance recorded
+    assert best["matched_on"] == "trade_name:contains"
+    # The fallback query is logged alongside the primary ones.
+    assert any(q.get("backend") == "ui" for q in result["queries"])
+
+
+def test_the_same_device_is_not_found_without_widen(live_server, tmp_path):
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text(PINK_CSV, encoding="utf-8")
+    out = tmp_path / "narrow"
+    main(["search", *DL, "--base", live_server, "--key", "dummy",
+          "--input", str(csv_path), "--out", str(out),
+          "--delay", "0", "--retries", "1"])
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    assert result["status"] == "not found"
+    assert not any(q.get("backend") == "ui" for q in result["queries"])
+
+
+def test_widen_does_not_fire_when_the_primary_pass_succeeded(live_server, tmp_path):
+    """The fallback must cost nothing for devices already found."""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,country,keys\nMindDoc,DE,MindDoc\n", encoding="utf-8")
+    out = tmp_path / "r"
+    main(["search", "--backend", "datalake", "--base", live_server, "--key", "dummy",
+          "--widen-base", live_server, "--input", str(csv_path), "--out", str(out),
+          "--delay", "0", "--retries", "1"])
+    payload = json.loads((out / "results.json").read_text())
+    result = payload["results"][0]
+    assert result["status"] == "found"
+    assert "matched_via" not in result["candidates"][0]
+    assert not any(q.get("backend") == "ui" for q in result["queries"])
+    assert payload["meta"]["widen_requests"] == 0
+
+
+def test_widen_provenance_reaches_every_output_format(live_server, tmp_path):
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text(PINK_CSV, encoding="utf-8")
+    out = tmp_path / "r"
+    main(["search", "--backend", "datalake", "--base", live_server, "--key", "dummy",
+          "--widen-base", live_server, "--input", str(csv_path), "--out", str(out),
+          "--delay", "0", "--retries", "1"])
+    md = (out / "report.md").read_text(encoding="utf-8")
+    assert "Found via" in md and "ui-substring" in md
+    assert "Substring-fallback requests:" in md
+    rows = list(csv.DictReader((out / "results.csv").open(encoding="utf-8")))
+    assert rows[0]["matched_via"] == "ui-substring"
+
+
+def test_widen_failure_does_not_mask_the_primary_result(live_server, tmp_path):
+    """An unreachable fallback must degrade to the primary verdict, not crash."""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text(PINK_CSV, encoding="utf-8")
+    out = tmp_path / "r"
+    assert main(["search", "--backend", "datalake", "--base", live_server,
+                 "--key", "dummy", "--widen-base", "http://127.0.0.1:9/nope",
+                 "--input", str(csv_path), "--out", str(out),
+                 "--delay", "0", "--retries", "1", "--timeout", "2"]) == EXIT_OK
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    # Primary succeeded and returned nothing, so this stays "not found" - the
+    # failed fallback must not turn it into "error".
+    assert result["status"] == "not found"
+    assert any("widen" in e for e in result["errors"])
+
+
+def test_widen_is_skipped_on_the_ui_backend(live_server, tmp_path, capsys):
+    """--backend ui is already substring; a fallback would be redundant."""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text(PINK_CSV, encoding="utf-8")
+    main(["search", "--backend", "ui", "--base", live_server,
+          "--input", str(csv_path), "--fields", "TRADE_NAME",
+          "--out", str(tmp_path / "r"), "--delay", "0", "--retries", "1"])
+    assert "substring fallback ready" not in capsys.readouterr().err
+
+
+def test_ui_server_widens_through_the_browser_api(live_server, tmp_path):
+    """The browser path must get the same fallback as the CLI."""
+    import threading
+
+    from eudamed.client import Client
+    from eudamed.ui_backend import UiClient
+    from eudamed.webui import serve as make_ui
+
+    primary = Client(base=live_server, key="dummy", delay=0, backoff_base=0, retries=1)
+    widen = UiClient(base=live_server, delay=0, backoff_base=0, retries=1)
+    server = make_ui(primary, port=0, widen_client=widen)
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        from conftest import UIClient
+        ui = UIClient(f"http://{host}:{port}")
+        assert ui.json("/api/health")["widen"] is True
+
+        d = ui.json("/api/search?name=PINK%21+Coach&country=DE")
+        assert d["status"] == "found"
+        best = d["candidates"][0]
+        assert best["trade_name"] == "PINK Coach - Breast Cancer Companion"
+        assert best["matched_via"] == "ui-substring"
+
+        # The downloadable report carries the provenance too.
+        md = ui.text("/api/report?name=PINK%21+Coach&format=md")
+        assert "ui-substring" in md
+
+        # The page explains that the fallback exists.
+        page = ui.text("/")
+        assert "found via substring" in page
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_ui_server_without_widen_reports_not_found(live_server):
+    """And says so in a way that reflects the fallback being off."""
+    import threading
+
+    from eudamed.client import Client
+    from eudamed.webui import serve as make_ui
+
+    primary = Client(base=live_server, key="dummy", delay=0, backoff_base=0, retries=1)
+    server = make_ui(primary, port=0)          # no widen_client
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        from conftest import UIClient
+        ui = UIClient(f"http://{host}:{port}")
+        assert ui.json("/api/health")["widen"] is False
+        d = ui.json("/api/search?name=PINK%21+Coach&country=DE")
+        assert d["status"] == "not found"
+    finally:
+        server.shutdown()
+        server.server_close()

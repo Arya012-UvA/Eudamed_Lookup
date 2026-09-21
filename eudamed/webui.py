@@ -32,10 +32,14 @@ from .search import Target, search_target
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, handler, client, verbose=False, targets=None):
+    def __init__(self, address, handler, client, verbose=False, targets=None,
+                 widen_client=None):
         super().__init__(address, handler)
         self.client = client
         self.verbose = verbose
+        # Substring-capable fallback for devices the exact-match primary
+        # backend cannot find at all. See search.search_target.
+        self.widen_client = widen_client
         # Optional device list loaded from a CSV, exposed to the page so a name
         # can be picked instead of typed, and the whole list run in one go.
         self.targets = list(targets or ())
@@ -103,6 +107,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Established against the live API; the UI explains the
                     # consequence rather than letting it look like "not found".
                     "exact_match_filters": True,
+                    "widen": self.server.widen_client is not None,
                 })
             elif parsed.path == "/api/devices":
                 self._json(200, {"devices": [t.to_dict() for t in self.server.targets]})
@@ -163,7 +168,8 @@ class Handler(BaseHTTPRequestHandler):
             result = search_target(self.server.client, target, reference=reference,
                                    top=int(query.get("top") or 10),
                                    min_score=float(query.get("min_score") or 0.0),
-                                   fields=",".join(chosen))
+                                   fields=",".join(chosen),
+                                   widen_client=self.server.widen_client)
         except AuthError as exc:
             self._json(401, {"error": "auth", "detail": str(exc)})
             return
@@ -187,7 +193,8 @@ class Handler(BaseHTTPRequestHandler):
         return search_target(self.server.client, target, reference=reference,
                              top=int(query.get("top") or 10),
                              min_score=float(query.get("min_score") or 0.0),
-                             fields=",".join(chosen))
+                             fields=",".join(chosen),
+                             widen_client=self.server.widen_client)
 
     def _report(self, query):
         """Re-run the search and return a downloadable report.
@@ -347,8 +354,10 @@ def _has_unresolved_codes(result):
     return False
 
 
-def serve(client, port=8100, host="127.0.0.1", verbose=False, targets=None):
-    return UIServer((host, port), Handler, client, verbose=verbose, targets=targets)
+def serve(client, port=8100, host="127.0.0.1", verbose=False, targets=None,
+          widen_client=None):
+    return UIServer((host, port), Handler, client, verbose=verbose, targets=targets,
+                    widen_client=widen_client)
 
 
 FAVICON = (
@@ -408,6 +417,7 @@ background:var(--card)}
 .chip{display:inline-block;background:var(--chip);color:var(--muted);border-radius:10px;
 padding:1px 8px;font-size:11px;white-space:nowrap;font-weight:600}
 .chip.mfr{color:var(--warn)}
+.chip.via{color:var(--possible);font-weight:600}
 .chip.score{color:var(--ink)}
 .warnbox{border-left:3px solid var(--warn);padding:7px 12px;margin:10px 0 0;font-size:13px;
 color:var(--warn)}
@@ -536,7 +546,9 @@ const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Mode
 let TH = {found:0.85, possible:0.6};
 
 let DEVICES = [];
+let HEALTH = { widen: false };
 fetch("/api/health").then(r => r.json()).then(h => {
+  HEALTH = h;
   TH = h.thresholds || TH;
   // No key is needed: the live API answers anonymous requests. Saying "no key
   // configured" in bold read as a warning about a problem that does not exist.
@@ -545,11 +557,11 @@ fetch("/api/health").then(r => r.json()).then(h => {
                  : " &middot; anonymous (no key required)");
   if (h.is_local) {
     $("demo").className = "demo";
-    $("demo").innerHTML = `<strong>Demo mode.</strong> This is the bundled local stand-in, which
-      contains only 4 fixture devices: <code>MindDoc</code>, <code>Moodpath</code>,
-      <code>Kalmeda</code> and <code>Vitadio</code>. Any other name will correctly come back
-      <em>not found</em> &mdash; it is not in the fixture. For real answers, restart without
-      <code>--base</code> and with a real subscription key.`;
+    // Don't enumerate the fixture here: the list drifts as tests are added.
+    $("demo").innerHTML = `<strong>Demo mode.</strong> This is the bundled local stand-in,
+      which holds a handful of fixture devices. Any name outside that fixture will correctly
+      come back <em>not found</em> &mdash; that is the fixture, not EUDAMED. For real answers,
+      restart without <code>--base</code>.`;
   }
 }).catch(() => { $("sub").textContent = "cannot reach the local server"; });
 
@@ -606,11 +618,19 @@ function card(c, searched) {
     ? `<div class="warnbox">Manufacturer-name match only &mdash; the trade name does not match
        "${esc(searched)}". Scored below the match threshold on purpose; this is a lead, not a
        match.</div>` : "";
+  // A hit from the substring fallback is less authoritative than an exact
+  // match on the documented API, so say where it came from.
+  const via = c.matched_via
+    ? `<span class="chip via">found via substring</span>` : "";
+  const viaNote = c.matched_via
+    ? `<div class="warnbox">Found through the EUDAMED website's substring search, not by
+       an exact match on the documented API. Undocumented backend &mdash; confirm this
+       device against the documented API before relying on it.</div>` : "";
   return `<div class="card"><h3>${c.link
       ? `<a href="${esc(c.link)}" target="_blank" rel="noopener">${title}</a>` : title}
     <span class="chip score">${c.score}</span>
-    <span class="chip${isMfr ? " mfr" : ""}">${esc(c.matched_on)}</span></h3>
-    ${warn}<dl>${rows}</dl></div>`;
+    <span class="chip${isMfr ? " mfr" : ""}">${esc(c.matched_on)}</span>${via}</h3>
+    ${warn}${viaNote}<dl>${rows}</dl></div>`;
 }
 
 function render(d) {
@@ -627,11 +647,18 @@ function render(d) {
       <ul>${(d.errors || []).map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul></div>`;
   } else if (!d.candidates.length) {
     html += `<p class="sub">No candidate scored above the minimum.</p>`;
-    html += `<div class="errbox"><strong>The API matches names exactly.</strong>
-      A near-miss returns nothing, so this does <em>not</em> mean the device is
-      unregistered &mdash; it may be registered under a different string. Try
-      <code>DEVICE_NAME</code> under Options, an exact UDI-DI, or
-      <code>--backend ui</code> for substring search.</div>`;
+    html += HEALTH.widen
+      ? `<div class="errbox"><strong>Exact match and substring search both found
+         nothing.</strong> The documented API matches names exactly, and the substring
+         fallback was tried as well, so this device is not registered under any string
+         resembling what you searched for. It may still exist under a completely
+         different name &mdash; try its UDI-DI, or look up the manufacturer with the
+         actors command.</div>`
+      : `<div class="errbox"><strong>The API matches names exactly.</strong>
+         A near-miss returns nothing, so this does <em>not</em> mean the device is
+         unregistered &mdash; it may be registered under a different string. The
+         substring fallback is off; restart without <code>--no-widen</code>, or try
+         <code>DEVICE_NAME</code> under Options or an exact UDI-DI.</div>`;
   }
   if (d.unresolved_codes) {
     html += `<div class="banner">Some coded fields still show a numeric id: /reference had no
