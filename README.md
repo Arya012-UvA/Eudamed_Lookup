@@ -101,7 +101,18 @@ directly from a page.
 
 Three panels, matching the commands below: the name search at the top,
 **Search by manufacturer** (name → SRN → devices), and **Discover by filter**.
-The `Software only` option under *Options* applies to all three.
+The `Software only` option under *Options* applies to all three, and the name
+search and the manufacturer panel both offer `report.md` / `results.csv` /
+`results.json` downloads, written by the same writers the CLI uses.
+
+`--input` decides what the *My list* buttons and **Run all** cover, so point it
+at whichever list you want to work through:
+
+```bash
+python3 -m eudamed serve --input devices.csv      # the 23-device list
+python3 -m eudamed serve --input diga-seed.csv    # all 47 DiGA
+python3 -m eudamed serve --input psych-devices.csv
+```
 
 ```bash
 python3 -m eudamed serve --input devices.csv
@@ -499,7 +510,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 329 tests
+pytest -q          # 335 tests
 ruff check eudamed tests
 ```
 
@@ -787,7 +798,7 @@ eudamed/
   ui_backend.py   the EUDAMED website's backend: substring search, paginated
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            329 tests, no network required
+tests/            335 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 

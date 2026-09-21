@@ -26,7 +26,7 @@ from .matching import FOUND, POSSIBLE
 from .records import Actor, Device
 from .reference import Reference
 from .report import safe_json, write_csv, write_markdown
-from .search import Target, search_manufacturer, search_target
+from .search import Target, manufacturer_results, search_manufacturer, search_target
 
 
 class UIServer(ThreadingHTTPServer):
@@ -236,6 +236,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "format must be md, csv or json"})
             return
 
+        # A manufacturer report is built from the same search and the same
+        # writers as the CLI's, so the downloaded document cannot differ.
+        if query.get("manufacturer") or query.get("srn"):
+            found, error = self._manufacturer_search(query)
+            if error:
+                self._json(*error)
+                return
+            results = manufacturer_results(found)
+            label = query.get("manufacturer") or query.get("srn") or "manufacturer"
+            stem = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-") or "manufacturer"
+            self._write_report(fmt, results, stem, query, fields=(
+                f"NAME={label!r} -> MF_SRN={found['srns']}"))
+            return
+
         if query.get("all") == "1":
             targets = list(self.server.targets)
             if not targets:
@@ -263,9 +277,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(502, {"error": "api", "detail": str(exc)})
                 return
 
+        self._write_report(fmt, results, stem, query)
+
+    def _write_report(self, fmt, results, stem, query, fields=None):
+        """Serve results as a download, using the CLI's own writers."""
         meta = {"generated": time.strftime("%Y-%m-%d %H:%M"),
                 "base": self.server.client.base,
-                "fields": (query.get("fields") or config.DEFAULT_SEARCH_FIELDS).upper(),
+                "fields": fields or (query.get("fields")
+                                     or config.DEFAULT_SEARCH_FIELDS).upper(),
                 "software_only": query.get("software_only") == "1",
                 "requests": self.server.client.request_count}
 
@@ -361,11 +380,24 @@ class Handler(BaseHTTPRequestHandler):
         /udi has no manufacturer-name filter, so the name is resolved to SRNs
         through /actors first. See search.search_manufacturer.
         """
-        name = (query.get("name") or "").strip()
+        found, error = self._manufacturer_search(query)
+        if error:
+            self._json(*error)
+            return
+        self._json(200, found)
+
+    def _manufacturer_search(self, query):
+        """Run a manufacturer lookup, returning (found, None) or (None, error).
+
+        Shared by /api/manufacturer and the report download, so a downloaded
+        manufacturer report is the same search the page showed.
+        """
+        # `name` on this route, `manufacturer` on the report route, where
+        # `name` already means a device name.
+        name = (query.get("manufacturer") or query.get("name") or "").strip()
         srns = [s for s in (query.get("srn") or "").split(",") if s.strip()]
         if not name and not srns:
-            self._json(400, {"error": "give a manufacturer name, or srn=<SRN>"})
-            return
+            return None, (400, {"error": "give a manufacturer name, or srn=<SRN>"})
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
         software_only = query.get("software_only") == "1"
         try:
@@ -375,12 +407,10 @@ class Handler(BaseHTTPRequestHandler):
                 top=int(query.get("top") or 200), software_only=software_only,
                 typer=self.server.typer(software_only))
         except AuthError as exc:
-            self._json(401, {"error": "auth", "detail": str(exc)})
-            return
+            return None, (401, {"error": "auth", "detail": str(exc)})
         except (ApiError, ValueError) as exc:
-            self._json(502, {"error": "api", "detail": str(exc)})
-            return
-        self._json(200, found)
+            return None, (502, {"error": "api", "detail": str(exc)})
+        return found, None
 
     def _actors(self, query):
         name = (query.get("name") or "").strip()
@@ -514,6 +544,10 @@ table.sum tr.row{cursor:pointer}
 table.sum tr.row:hover{background:var(--band)}
 .st.found{color:var(--found)}.st.possible{color:var(--possible)}.st.none{color:var(--none)}
 .dl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:14px 0 0}
+/* A class rule beats the hidden attribute's UA display:none, so without this
+   `dl.hidden = true` does nothing and stale download links from the previous
+   query stay clickable under a new result. */
+.dl[hidden]{display:none}
 .dl a{background:var(--chip);color:var(--ink);border:1px solid var(--line);border-radius:7px;
 padding:7px 13px;font-size:13px;text-decoration:none;font-weight:600}
 .dl a:hover{border-color:var(--accent);color:var(--accent)}
@@ -882,20 +916,23 @@ function renderSummary() {
 
 /* Download links reuse the server-side writers, so a downloaded report cannot
    drift from the one the CLI produces. */
-function showDownloads({ target, name, all }) {
+function showDownloads({ target, name, all, manufacturer, srn }) {
   const o = currentOpts();
   const base = p => "/api/report?" + new URLSearchParams({
     ...p, fields: o.fields.join(","), top: o.top, min_score: o.min, codes: o.codes,
     software_only: o.software_only });
-  const q = all ? { all: "1" } : (target ? { target } : { name });
-  const label = all ? `all ${DEVICES.length} device(s)` : esc(target || name);
+  const isMfr = manufacturer || srn;
+  const q = isMfr ? { manufacturer: manufacturer || "", srn: srn || "" }
+    : all ? { all: "1" } : (target ? { target } : { name });
+  const label = isMfr ? `${esc(manufacturer || srn)}'s devices`
+    : all ? `all ${DEVICES.length} device(s)` : esc(target || name);
   $("dl").hidden = false;
   $("dl").innerHTML =
     `<span>Download ${label}:</span>`
     + `<a href="${base({ ...q, format: "md" })}">report.md</a>`
     + `<a href="${base({ ...q, format: "csv" })}">results.csv</a>`
     + `<a href="${base({ ...q, format: "json" })}">results.json</a>`
-    + (all ? "" : `<a href="${base({ all: "1", format: "md" })}">whole list (.md)</a>`)
+    + (all || isMfr ? "" : `<a href="${base({ all: "1", format: "md" })}">whole list (.md)</a>`)
     + `<span>re-queries the API, so it may take a moment</span>`;
 }
 
@@ -995,6 +1032,7 @@ $("m_go").addEventListener("click", async () => {
         than software, ${d.dropped_kinds.unknown || 0} it says nothing about.</div>`;
     html += d.devices.map(c => card(c, d.query)).join("");
     $("out").innerHTML = html;
+    if (d.devices.length) showDownloads({ manufacturer: name, srn });
   } catch (err) {
     $("status").className = "err";
     $("status").textContent = err.message;

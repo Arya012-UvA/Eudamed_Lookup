@@ -241,3 +241,15 @@ def test_the_page_words_a_filtered_result_as_filtered_not_not_found():
     assert "filtered out" in PAGE
     assert "Found, then filtered out." in PAGE
     assert "dropCount(d)" in PAGE
+
+
+def test_the_download_bar_can_actually_be_hidden():
+    """`.dl{display:flex}` beats the hidden attribute's UA display:none.
+
+    Without an explicit rule, `dl.hidden = true` does nothing and download
+    links from the previous query stay clickable under a new result - so a
+    report could be downloaded for something other than what is on screen.
+    """
+    from eudamed.webui import PAGE
+
+    assert ".dl[hidden]{display:none}" in PAGE

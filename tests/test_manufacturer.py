@@ -177,3 +177,37 @@ def test_ui_manufacturer_route_honours_software_only(ui_server):
         "/api/manufacturer?name=Schlafkomfort+GmbH&software_only=1")
     assert filtered["devices"] == []
     assert sum(filtered["dropped_kinds"].values()) == 2
+
+
+# --- downloadable manufacturer report --------------------------------------
+def test_ui_report_route_builds_a_manufacturer_report(ui_server):
+    """The page's download links go through the CLI's own writers."""
+    body = ui_server.text("/api/report?manufacturer=MindDoc+Health+GmbH&format=md")
+    assert body.startswith("# EUDAMED device report")
+    assert "MF_SRN" in body
+    assert "## MindDoc: Your Companion" in body and "## Moodpath" in body
+
+
+def test_ui_report_route_accepts_an_srn(ui_server):
+    body = ui_server.text("/api/report?srn=DE-MF-000099001&format=csv")
+    assert "Kalmeda" in body
+
+
+def test_ui_manufacturer_report_honours_software_only(ui_server):
+    body = ui_server.text(
+        "/api/report?manufacturer=Schlafkomfort+GmbH&software_only=1&format=json")
+    payload = json.loads(body)
+    assert payload["results"] == []
+    assert payload["meta"]["software_only"] is True
+
+
+def test_ui_report_route_still_needs_something_to_report(ui_server):
+    assert ui_server.status("/api/report?format=md") == 400
+
+
+def test_manufacturer_query_key_does_not_collide_with_a_device_name(ui_server):
+    """`name` means a device on the report route, so the manufacturer uses its
+    own key - otherwise a device report and a manufacturer report would be
+    indistinguishable."""
+    device = ui_server.text("/api/report?name=MindDoc&format=md")
+    assert "MF_SRN" not in device
