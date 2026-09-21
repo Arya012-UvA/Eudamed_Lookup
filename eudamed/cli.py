@@ -27,8 +27,8 @@ def add_common(parser):
     conn.add_argument("--key", default=None,
                       help=f"subscription key (default ${config.KEY_ENV})")
     conn.add_argument("--auth-mode", choices=("header", "query"), default="header",
-                      help="send the key as the %s header (default) or the %s query parameter"
-                           % (config.KEY_HEADER, config.KEY_QUERY))
+                      help=f"send the key as the {config.KEY_HEADER} header (default) "
+                           f"or the {config.KEY_QUERY} query parameter")
     conn.add_argument("--format", dest="fmt", choices=config.FORMATS, default="json",
                       help="response format requested from the API (required by the spec)")
     conn.add_argument("--api-version", default=config.API_VERSION,

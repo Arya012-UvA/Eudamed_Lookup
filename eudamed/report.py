@@ -44,10 +44,12 @@ def write_csv(results, path):
 
 def safe_json(obj):
     """JSON safe to embed in a <script> block."""
+    # U+2028/U+2029 are valid in JSON strings but are statement terminators
+    # in JavaScript, so they must be escaped rather than embedded literally.
     return (json.dumps(obj, ensure_ascii=False, default=str)
             .replace("</", "<\\/")
-            .replace(" ", "\\u2028")
-            .replace(" ", "\\u2029"))
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
 
 
 def write_html(results, path, meta=None):

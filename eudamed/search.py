@@ -35,7 +35,7 @@ def load_targets(path):
         if "name" not in cols:
             raise ValueError(
                 f"{path} has no 'name' column (found: {', '.join(reader.fieldnames)})")
-        for lineno, row in enumerate(reader, start=2):
+        for row in reader:
             clean = {(k or "").strip().lower(): (v or "").strip()
                      for k, v in row.items() if k}
             name = clean.get("name", "")
@@ -126,6 +126,9 @@ def run(client, targets, reference=None, top=5, min_score=0.45,
         results.append(result)
         if progress:
             top_c = result["candidates"][0] if result["candidates"] else None
-            detail = f" (best: {top_c['trade_name']!r} {top_c['score']} via {top_c['matched_on']})" if top_c else ""
+            detail = ""
+            if top_c:
+                detail = (f" (best: {top_c['trade_name']!r} {top_c['score']} "
+                          f"via {top_c['matched_on']})")
             progress(f"  -> {result['status']}{detail}", indent=True)
     return results

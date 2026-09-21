@@ -16,5 +16,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest ruff
+      - run: ruff --version
       - run: ruff check eudamed tests
       - run: pytest -q

@@ -2,14 +2,15 @@
 
 import csv
 import json
+from pathlib import Path
 
 import pytest
+from conftest import error_opener, json_opener
 
 from eudamed.client import AuthError
 from eudamed.reference import Reference
 from eudamed.report import safe_json, write_all, write_csv, write_html
 from eudamed.search import Target, load_targets, run, search_target
-from conftest import error_opener, json_opener
 
 ROWS = [
     {"TRADE_NAME": "MindDoc", "MF_NAME": "MindDoc Health GmbH", "MF_SRN": "DE-MF-1",
@@ -42,7 +43,7 @@ def test_headers_are_case_and_space_insensitive(tmp_path):
 
 def test_bom_is_tolerated(tmp_path):
     p = tmp_path / "d.csv"
-    p.write_bytes("﻿name,country\nMindDoc,DE\n".encode("utf-8"))
+    p.write_bytes("﻿name,country\nMindDoc,DE\n".encode())
     assert load_targets(str(p))[0].name == "MindDoc"
 
 
@@ -153,12 +154,12 @@ def _results(client_factory):
 def test_write_all_produces_three_files(tmp_path, client_factory):
     paths = write_all(_results(client_factory), str(tmp_path / "out"), {"base": "x"})
     for kind in ("json", "csv", "html"):
-        assert paths[kind] and open(paths[kind], encoding="utf-8").read()
+        assert paths[kind] and Path(paths[kind]).read_text(encoding="utf-8")
 
 
 def test_json_has_meta_and_results(tmp_path, client_factory):
     paths = write_all(_results(client_factory), str(tmp_path / "out"), {"base": "x"})
-    payload = json.loads(open(paths["json"], encoding="utf-8").read())
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
     assert payload["meta"]["base"] == "x"
     assert payload["results"][0]["status"] == "found"
 
@@ -166,7 +167,8 @@ def test_json_has_meta_and_results(tmp_path, client_factory):
 def test_csv_flat_row_and_not_found_row(tmp_path, client_factory):
     path = tmp_path / "r.csv"
     write_csv(_results(client_factory), path)
-    rows = list(csv.DictReader(path.open(encoding="utf-8")))
+    with path.open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
     assert rows[0]["name"] == "MindDoc" and rows[0]["matched_on"] == "trade_name:exact"
     assert rows[0]["risk_class"] in ("", "2", "CLASS_IIA")
     assert rows[1]["status"] == "not found" and rows[1]["trade_name"] == ""
@@ -178,7 +180,8 @@ def test_csv_does_not_promote_a_sub_threshold_lead(tmp_path, client_factory):
     result = search_target(client, Target("MindDoc", country="DE", keys=["MindDoc"]))
     path = tmp_path / "r.csv"
     write_csv([result], path)
-    row = list(csv.DictReader(path.open(encoding="utf-8")))[0]
+    with path.open(encoding="utf-8") as handle:
+        row = next(iter(csv.DictReader(handle)))
     assert row["status"] == "not found"
     assert row["trade_name"] == ""          # Moodpath must NOT be presented as the match
     assert row["candidates"] == "1"         # but it is still counted as a lead
@@ -208,10 +211,10 @@ def test_html_escapes_script_injection(tmp_path):
 
 
 def test_safe_json_escapes_line_separators():
-    assert " " not in safe_json({"a": "x y"})
+    assert "\u2028" not in safe_json({"a": "x\u2028y"})
 
 
 def test_html_is_valid_without_candidates(tmp_path, client_factory):
     paths = write_all(_results(client_factory), str(tmp_path / "out"))
-    html = open(paths["html"], encoding="utf-8").read()
+    html = Path(paths["html"]).read_text(encoding="utf-8")
     assert "__DATA__" not in html and "__META__" not in html

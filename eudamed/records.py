@@ -33,11 +33,14 @@ class Device:
         self.risk_class = str(pick(i, "RISK_CLASS", "riskClass", "RISK_CLASS_CODE"))
         self.risk_class_id = pick(i, "RISK_CLASS_ID", "riskClassId", default=None)
         self.legislation = str(pick(i, "APPLICABLE_LEGISLATION", "applicableLegislation"))
-        self.legislation_id = pick(i, "APPLICABLE_LEGISLATION_ID", "applicableLegislationId", default=None)
+        self.legislation_id = pick(i, "APPLICABLE_LEGISLATION_ID",
+                                   "applicableLegislationId", default=None)
         self.market_status = str(pick(i, "PLACED_ON_THE_MARKET", "placedOnTheMarket"))
-        self.market_status_id = pick(i, "PLACED_ON_THE_MARKET_ID", "placedOnTheMarketId", default=None)
+        self.market_status_id = pick(i, "PLACED_ON_THE_MARKET_ID",
+                                     "placedOnTheMarketId", default=None)
         self.special_type = str(pick(i, "SPECIAL_DEVICE_TYPE", "specialDeviceType"))
-        self.special_type_id = pick(i, "SPECIAL_DEVICE_TYPE_ID", "specialDeviceTypeId", default=None)
+        self.special_type_id = pick(i, "SPECIAL_DEVICE_TYPE_ID",
+                                    "specialDeviceTypeId", default=None)
         self.uuid = str(pick(i, "UUID", "uuid", "id", "udiDiDataUuid"))
         self.latest_version = pick(i, "LATEST_VERSION", "latestVersion", default=None)
         self.version = pick(i, "VERSION_NUMBER", "versionNumber", "VERSION", default=None)
@@ -90,7 +93,8 @@ class Actor:
         self.actor_type = str(pick(i, "ACTOR_TYPE", "actorType"))
         self.ca_name = str(pick(i, "CA_NAME", "caName"))
         self.ca_actor_id = str(pick(i, "CA_ACTOR_ID", "caActorId"))
-        self.country = str(pick(i, "ACT_COUNTRY_ISO2_CODE", "actCountryIso2Code", "countryIso2Code")).upper()
+        self.country = str(pick(i, "ACT_COUNTRY_ISO2_CODE", "actCountryIso2Code",
+                                "countryIso2Code")).upper()
 
     def to_dict(self):
         return {

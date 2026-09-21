@@ -64,9 +64,9 @@ class Reference:
         if self.verbose:
             print(f"  reference: {len(self._by_id)} unambiguous code(s)", flush=True)
         if self.ambiguous:
+            example = next(iter(self.ambiguous.items()))
             print(f"  warning: {len(self.ambiguous)} reference id(s) map to several codes "
-                  f"and are left unresolved (e.g. "
-                  f"{list(self.ambiguous.items())[0]}). /reference has no column "
+                  f"and are left unresolved (e.g. {example}). /reference has no column "
                   f"identifying which code table an id belongs to.", flush=True)
         return self
 

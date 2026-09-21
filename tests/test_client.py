@@ -3,10 +3,10 @@
 import urllib.parse
 
 import pytest
+from conftest import error_opener, json_opener
 
 from eudamed import config
 from eudamed.client import ApiError, AuthError, Client
-from conftest import error_opener, json_opener
 
 
 def params_of(url):

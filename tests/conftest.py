@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from eudamed import fakeserver                      # noqa: E402
-from eudamed.client import Client                   # noqa: E402
+from eudamed import fakeserver
+from eudamed.client import Client
 
 
 class FakeResp(io.BytesIO):

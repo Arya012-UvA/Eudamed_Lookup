@@ -1,5 +1,6 @@
 """HTTP client for the EUDAMED Public API v1.0."""
 
+import contextlib
 import csv
 import io
 import json
@@ -138,10 +139,8 @@ class Client:
                         url=safe_url, status=exc.code, body=detail, cause=exc) from exc
                 retry_after = (exc.headers or {}).get("Retry-After") if exc.headers else None
                 if retry_after:
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         time.sleep(min(float(retry_after), 60))
-                    except (TypeError, ValueError):
-                        pass
             except (urllib.error.URLError, TimeoutError, ConnectionError,
                     json.JSONDecodeError, csv.Error, UnicodeDecodeError) as exc:
                 last = exc
@@ -169,15 +168,21 @@ class Client:
 
     @staticmethod
     def _read_error(exc):
+        """Body of an error response, best effort.
+
+        Only ever used to enrich a message that is being raised anyway, so a
+        failure to read it must not mask the original error.
+        """
         try:
             return exc.read().decode("utf-8", "replace")[:500]
-        except Exception:
+        except (OSError, AttributeError, ValueError, UnicodeError):
             return ""
 
     def _redact(self, url):
         if not self.key:
             return url
-        return url.replace(urllib.parse.quote(self.key, safe=""), "<key>").replace(self.key, "<key>")
+        quoted = urllib.parse.quote(self.key, safe="")
+        return url.replace(quoted, "<key>").replace(self.key, "<key>")
 
     # -- typed operations -------------------------------------------------
     def udi(self, **params):

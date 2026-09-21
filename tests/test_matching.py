@@ -2,8 +2,7 @@
 
 import pytest
 
-from eudamed.matching import (FOUND, MANUFACTURER_CAP, POSSIBLE, classify,
-                              norm, score_device, squash)
+from eudamed.matching import FOUND, MANUFACTURER_CAP, POSSIBLE, classify, norm, score_device, squash
 from eudamed.records import Device
 
 
@@ -113,5 +112,6 @@ def test_empty_keys_and_blank_rows():
 def test_score_always_within_bounds():
     for keys in (["MindDoc"], ["x"], ["a b c"]):
         for country in ("DE", "NL", ""):
-            score, _ = score_device(keys, country, dev(trade="MindDoc", mfr="MindDoc", srn="DE-MF-1"))
+            device = dev(trade="MindDoc", mfr="MindDoc", srn="DE-MF-1")
+            score, _ = score_device(keys, country, device)
             assert 0.0 <= score <= 1.0
