@@ -197,6 +197,22 @@ carries the evidence that produced it** (`matched_on`):
 Then `+0.05` if the manufacturer SRN country matches `country`, `-0.10` if it
 conflicts. Buckets: **found** ≥ 0.85, **possible** ≥ 0.60, else **not found**.
 
+### `error` is not `not found`
+
+There is a fourth status. If **every** request for a device failed — the host is
+unreachable, the key was rejected, the API is down — the status is `error`, not
+`not found`.
+
+That distinction is the point: "the register does not list this device" and "the
+register could not be reached" are different answers, and reporting the second
+as the first asserts something that was never checked. An `error` row never
+promotes a candidate into the CSV's best-match columns, the HTML report counts
+it separately and says how many devices could not be checked, and the web UI
+shows **could not check** with the underlying failure and what to do about it.
+
+A partial failure — one query erroring while another succeeds and returns
+nothing — is a genuine `not found`.
+
 ### Identifier searches are not name comparisons
 
 When a term is matched against an identifier field (`PRIMARY_DI`, `BASIC_UDI`,
@@ -230,9 +246,14 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 163 tests
+pytest -q          # 172 tests
 ruff check eudamed tests
 ```
+
+It also syntax-checks the JavaScript embedded in both HTML pages with `node`
+(skipped if node is absent). Each page is one large Python string, so a bad
+edit can close a template literal early and yield a page that lints clean,
+imports fine and serves a 200 while being broken in the browser.
 
 Covers spec conformance (required `format`, `api-version`, `Content-Type`, both
 credential schemes, rejection of undocumented parameters), retry and backoff
@@ -345,7 +366,7 @@ eudamed/
   cli.py          argparse CLI: search, actors, reference, probe, serve
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            163 tests, no network required
+tests/            172 tests, no network required
 docs/             vendored OpenAPI document
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
