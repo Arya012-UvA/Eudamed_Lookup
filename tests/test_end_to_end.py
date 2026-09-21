@@ -644,3 +644,75 @@ def test_ui_discover_keyword_narrows_locally(ui_server):
 
 def test_ui_discover_needs_a_server_side_filter(ui_server):
     assert ui_server.status("/api/discover?keyword=depression") == 400
+
+
+# --- local cache: the only way to match an approximate name -------------
+def test_scan_partitions_and_writes_a_cache(live_server, tmp_path, capsys):
+    out = tmp_path / "c" / "udi.jsonl"
+    assert main(["scan", "--base", live_server, "--out", str(out),
+                 "--partition-by", "RISK_CLASS_ID", "--delay", "0",
+                 "--retries", "1"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "RISK_CLASS_ID=1" in err and "unique row(s)" in err
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line]
+    assert {r["TRADE_NAME"] for r in rows} >= {"MindDoc", "Kalmeda"}
+    meta = json.loads((out.parent / "udi.meta.json").read_text(encoding="utf-8"))
+    assert meta["rows"] == len(rows) and meta["partitions"]
+
+
+def test_scan_rejects_an_undocumented_partition_field(tmp_path, capsys):
+    assert main(["scan", "--out", str(tmp_path / "c.jsonl"),
+                 "--partition-by", "tradeName"]) == EXIT_USAGE
+    assert "not a documented" in capsys.readouterr().err
+
+
+def test_scan_with_explicit_filters(live_server, tmp_path):
+    out = tmp_path / "c.jsonl"
+    assert main(["scan", "--base", live_server, "--out", str(out),
+                 "--filter", "RISK_CLASS_ID=2", "--delay", "0",
+                 "--retries", "1"]) == EXIT_OK
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line]
+    assert rows and all(r["RISK_CLASS_ID"] == 2 for r in rows)
+
+
+def test_search_against_a_cache_matches_approximate_names(live_server, tmp_path):
+    """The point of the cache: /udi filters are exact, so an approximate name
+    can only be matched locally."""
+    cache = tmp_path / "c.jsonl"
+    main(["scan", "--base", live_server, "--out", str(cache),
+          "--delay", "0", "--retries", "1"])
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,country,keys\nMind Doc,DE,Mind Doc\n", encoding="utf-8")
+    out = tmp_path / "r"
+    assert main(["search", "--base", live_server, "--input", str(csv_path),
+                 "--cache", str(cache), "--out", str(out), "--delay", "0",
+                 "--retries", "1"]) == EXIT_OK
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    # "Mind Doc" is not a registered trade name, so a server-side query would
+    # return nothing; locally it matches MindDoc.
+    assert result["status"] == "found"
+    assert result["candidates"][0]["trade_name"] == "MindDoc"
+    assert result["queries"][0]["param"] == "local cache"
+
+
+def test_cache_mode_records_that_it_used_no_requests(live_server, tmp_path):
+    cache = tmp_path / "c.jsonl"
+    main(["scan", "--base", live_server, "--out", str(cache), "--delay", "0",
+          "--retries", "1"])
+    out = tmp_path / "r"
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,keys\nKalmeda,Kalmeda\n", encoding="utf-8")
+    main(["search", "--base", live_server, "--input", str(csv_path), "--cache", str(cache),
+          "--out", str(out), "--delay", "0", "--retries", "1", "--no-resolve-codes"])
+    meta = json.loads((out / "results.json").read_text())["meta"]
+    assert meta["requests"] == 0 and meta["cached_rows"] >= 1
+
+
+def test_search_reports_an_unreadable_cache(tmp_path, capsys):
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("not json\n", encoding="utf-8")
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name\nX\n", encoding="utf-8")
+    assert main(["search", "--input", str(csv_path), "--cache", str(bad),
+                 "--out", str(tmp_path / "r")]) == EXIT_USAGE
+    assert "cannot read --cache" in capsys.readouterr().err

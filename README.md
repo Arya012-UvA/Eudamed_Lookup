@@ -335,7 +335,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 211 tests
+pytest -q          # 222 tests
 ruff check eudamed tests
 ```
 
@@ -413,6 +413,60 @@ Check the reported `/udi` field names against `Device.__init__`, then:
 python3 -m eudamed search --input devices.example.csv --out results -v
 ```
 
+## Verified API behaviour
+
+Established by probing the live API, none of it in the specification:
+
+| Property | Finding |
+| --- | --- |
+| Authentication | **None required.** Anonymous requests return `200` |
+| Filter matching | **Exact, case-insensitive.** `TRADE_NAME=Mind` returns the device called `MIND` — not a prefix or substring match |
+| Wildcards | None. `*` and `%` return nothing |
+| Pagination | **None.** `$top`, `$skip`, `$count` → `400 Invalid Query Parameter` |
+| Row cap | **1000 rows** per request, with nothing in the response saying it truncated |
+| `$filter` | Recognised but **unusable** — see below |
+| `/udi` columns | 61, against 13 filterable parameters |
+| `/reference` | 294 rows, keyed `(CODE, ID) → VALUE` |
+
+### The exact-match consequence
+
+A device cannot be found unless you already know its **exact** registered trade
+name. `TRADE_NAME=MindDoc` returns nothing whether or not MindDoc is on the
+register, so a plain name search cannot distinguish "not registered" from
+"registered under a different string".
+
+Fuzzy matching therefore cannot work server-side — there is nothing to score,
+because the exact filter returned no rows. Use `scan` to cache rows locally and
+`search --cache` to match against them:
+
+```bash
+python3 -m eudamed scan --out cache/udi.jsonl --partition-by RISK_CLASS_ID
+python3 -m eudamed search --input devices.csv --cache cache/udi.jsonl --out results
+```
+
+`scan` fetches one request per partition and de-duplicates by UUID / UDI-DI /
+Basic UDI-DI. Any partition that comes back at exactly 1000 rows is recorded as
+truncated, and both `scan` and `search --cache` say so — a cache built from
+truncated partitions **cannot** support a conclusion that a device is absent.
+
+If you know a device's exact trade name, UDI-DI or Basic UDI-DI, query it
+directly instead; those are exact identifiers and need no cache.
+
+### A server-side defect in `$filter`
+
+`$filter` is accepted — it is not rejected as an invalid parameter — and its
+value reaches an OData parser. But the gateway appends `,1 eq 1`:
+
+```
+sent:   $filter=TRADE_NAME eq 'MindDoc'
+parsed: TRADE_NAME eq 'MindDoc',1 eq 1
+error:  Syntax error at position 24     <- the comma the server added
+```
+
+The expression parses correctly up to that comma, and the same happens at
+position 31 for `contains(...)`. So `$filter` cannot be used from outside, and
+the fault is in their gateway rather than in the request.
+
 ## Known gaps in the API documentation
 
 These are properties of the published spec, not of this tool:
@@ -481,10 +535,11 @@ eudamed/
   search.py       orchestration: targets -> ranked candidates
   report.py       JSON / CSV / HTML writers
   cli.py          argparse CLI: search, actors, reference, probe, serve,
-                  filtertest, discover, raw
+                  filtertest, discover, raw, scan
+  cache.py        local row cache, since the API cannot be searched fuzzily
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            211 tests, no network required
+tests/            222 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
