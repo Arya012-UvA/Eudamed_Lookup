@@ -1,58 +1,103 @@
-# `diga-seed.csv` — provenance and how to refresh it
+# `diga-seed.csv` — where it comes from
 
 ## What this file is
 
 A seed list of **DiGA** — *Digitale Gesundheitsanwendungen*, the digital health
-applications that German statutory health insurance reimburses. BfArM keeps the
+applications German statutory health insurance reimburses. BfArM keeps the
 authoritative register, the DiGA-Verzeichnis, at <https://diga.bfarm.de>.
 
-DiGA are a good seed list for this tool because they are *by definition* medical
-device software: a DiGA must be a CE-marked class I or IIa medical device, so
-every entry should appear in EUDAMED. That makes the directory a ready-made
-answer to "which software devices should I be looking for?" — and 24 of the 47
-rows here are psychological or psycho-oncological indications.
-
-Feed it in exactly like the hand-made list:
+DiGA make a good seed list because they are *by definition* medical device
+software: a DiGA must be a CE-marked class I or IIa device, so every entry
+should appear in EUDAMED. Twenty-four of the forty-seven rows are
+psychological or psycho-oncological.
 
 ```bash
 python3 -m eudamed search --input diga-seed.csv --software-only --out diga
 ```
 
-## Provenance — read this before quoting the file
+## Provenance of the version in git — read this before quoting it
 
-**These names were compiled from the model's own knowledge, not fetched from
-BfArM.** The sandbox this was written in blocks all EU hosts, so
-`diga.bfarm.de` could not be read (`CONNECT` returns 403). Consequences:
+**The rows currently committed were compiled from the model's own knowledge,
+not fetched from BfArM.** The sandbox they were written in blocks every EU
+host (`diga.bfarm.de` answers 403 to `CONNECT`). Consequences:
 
-- Some names may be **misspelled**, may use a **superseded product name**, or
-  may name an app that has since been **delisted** — the directory changes as
-  applications are added and removed.
-- The list is **not complete**. It is a starting point, not the register.
-- Nothing here has been checked against EUDAMED either.
+- Of the 47 rows, **17 are independently corroborated** by `devices.csv`,
+  which the repository owner compiled separately. The other 30 rest on recall
+  alone.
+- The likely error is not that an app is invented but that its **exact wording
+  is wrong** — and wording is what matters here, because the API matches names
+  exactly. `Selfapy Depression` and `Selfapy Online-Kurs bei Depression` are
+  the difference between a hit and nothing. The `broad` column mitigates this
+  through the substring fallback; it does not fix it.
+- The list is **not complete**, and entries may have been delisted since.
 
-A wrong name is cheap rather than dangerous: the search simply reports *not
-found* for that row, costing a couple of requests. The risk runs the other way
-— do **not** cite this file as evidence that something is or is not a DiGA.
-Check <https://diga.bfarm.de> for that.
+A wrong name is cheap: that row reports *not found* and costs two requests.
+The risk runs the other way — **do not cite this file as evidence that
+something is or is not a DiGA.** Check <https://diga.bfarm.de> for that.
 
-## Refreshing it
+## Replacing it with sourced data
 
-The directory has no public bulk export that this tool can rely on, so:
+Once you run the fetcher, the row provenance stops being recall and the file
+gets a generated `diga-seed.provenance.md` recording exactly where it came
+from. Either interface works.
 
-1. Open <https://diga.bfarm.de> and list the directory.
-2. For each entry, add a row: `name` (ASCII, for tidy filenames and shell use),
-   `description` (indication), and `keys` — the **exact** registered spelling,
-   umlauts and all, plus any shorter variants, separated by `|`.
-3. Put the manufacturer or a short stem of the product name in `broad`. Those
-   terms are never scored; they only widen *querying*, and they are what the
-   substring fallback probes when exact matching finds nothing.
+### Command line
 
-### Two deliberate choices in the file
+```bash
+# preview only, nothing is written
+python3 -m eudamed diga --url https://diga.bfarm.de/de/verzeichnis
+
+# from a page you saved in the browser, or a JSON response from devtools
+python3 -m eudamed diga --from saved-page.html --report diga-report.txt
+
+# write, merging into the existing list
+python3 -m eudamed diga --from saved-page.html --out diga-seed.csv
+```
+
+### Browser
+
+`python3 -m eudamed serve` → **Build a device list**. Paste the names, choose
+a saved file, or fetch a URL; then *Use as My list* to search them straight
+away, or *Download CSV* to keep the file. Same extractors as the command.
+
+### Expect the plain fetch to find nothing
+
+The directory is most likely a JavaScript application, so a plain `GET`
+returns the page shell and the entries arrive afterwards, in the browser.
+That is a designed-for outcome, not a bug: the command says so and prints the
+alternatives. In rough order of effort:
+
+1. **Save the page.** Open the directory, wait for the list, `Ctrl+S`
+   ("Webpage, Complete" or "Single File"), then `--from that-file.html`.
+2. **Copy the API response.** `F12` → Network → XHR → reload → click the
+   request that returns the list → copy its response into a file, then
+   `--from response.json`. Or pass that request's URL to `--url` directly.
+3. **Type the names.** A plain list, one per line, optionally
+   `Name – indication`. Never mis-parsed, and it is what the shipped rows
+   would have come from had the directory been reachable.
+
+If the HTML path returns junk or nothing, `--report FILE` records what the
+extractor actually saw — that is the fastest route to getting the selectors
+fixed for this site, since they were written without ever seeing its markup.
+
+## Two deliberate encoding choices
 
 - **`name` is ASCII, `keys` is not.** `Oviva Direkt fuer Adipositas` is the
-  row's label; `Oviva Direkt für Adipositas` is what gets sent to the API.
-  The register holds the umlaut, so the query must too.
-- **`country` is empty throughout.** It is the *expected manufacturer* country,
-  and a mismatch costs 0.10 of score. Several DiGA manufacturers are not
-  German (Vitadio is Czech, Oviva is Swiss), so guessing `DE` across the board
-  would penalise correct matches. Fill it in per row only where you know it.
+  row's label, for tidy filenames and shell use; `Oviva Direkt für Adipositas`
+  is what gets sent to the API, because that is what the register holds. The
+  fetcher transliterates properly (`ä→ae`, `ß→ss`) rather than stripping
+  accents — `matching.norm()` would turn `für` into `fur` and `Größe` into
+  `groe`, which match nothing.
+- **`country` is empty throughout.** It is the *expected manufacturer*
+  country and a mismatch costs 0.10 of score. Several DiGA manufacturers are
+  not German (Vitadio is Czech, Oviva is Swiss), so a blanket `DE` would
+  penalise correct matches. Fill it per row only where you know it.
+
+## Refreshing keeps your curation
+
+`--out` **merges** by default: a product already in the file keeps its
+hand-tuned `keys` and `broad` terms, only a blank `description` is filled in,
+and the diff tells you what the directory added. A product the directory no
+longer lists is **kept and reported**, not deleted — a delisted DiGA may still
+be registered in EUDAMED, so it stays worth searching. `--replace` discards
+all of that and needs `--force`.

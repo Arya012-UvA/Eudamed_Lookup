@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 
-from . import config, devicetype
+from . import config, devicetype, diga
 from .client import ApiError, AuthError, Client
 from .fields import describe_keys
 from .records import Actor, Device
@@ -332,6 +332,132 @@ def cmd_manufacturer(args):
     for kind in ("json", "csv", "md", "html"):
         log(f"  {kind:4} {os.path.abspath(paths[kind])}")
     return EXIT_OK
+
+
+# ------------------------------------------------------------------ diga
+#: --as values, mapped to eudamed.diga's extractor names. "text" is spelled
+#: without the space so it is typeable on a command line.
+DIGA_HINTS = {"json": "json", "csv": "csv", "html": "html", "text": "text list"}
+
+NO_ENTRIES_HELP = """
+Nothing in that payload looked like a product listing. The most likely reason
+is that the directory is a JavaScript application: a plain GET returns the
+page shell, and the entries are loaded afterwards by the browser. Two ways
+round it, easiest first:
+
+  1. Open the directory in your browser, wait for the list to appear, save the
+     page (Ctrl+S, "Webpage, Complete" or "Single File"), then:
+         python -m eudamed diga --from "the-saved-file.html"
+
+  2. Open the directory, press F12 -> Network -> XHR, reload, and click the
+     request that returns the list. Copy its response into a file, then:
+         python -m eudamed diga --from response.json
+     Or pass that request's URL straight to --url; JSON is handled directly.
+
+Failing both, a plain list of names in a text file works and is never
+mis-parsed - one name per line, optionally "Name - indication".
+
+Pass --report FILE to record what the extractor actually saw; that is the
+fastest way to get the parser fixed for this site.
+"""
+
+
+def cmd_diga(args):
+    """Convert a published directory listing into a search input CSV.
+
+    Named for the DiGA-Verzeichnis, which is the reason it exists, but the
+    extraction is source-agnostic - see eudamed.diga.
+    """
+    if bool(args.source) == bool(args.url):
+        log("give exactly one of --from FILE or --url [URL]")
+        return EXIT_USAGE
+    if args.replace and args.out and not args.force:
+        # --replace discards hand-tuned keys and broad terms, so it is the one
+        # destructive mode and asks before doing it.
+        log("--replace discards the curated keys/broad terms in "
+            f"{args.out}; pass --force if that is what you want")
+        return EXIT_USAGE
+
+    if args.source:
+        try:
+            with open(args.source, encoding="utf-8-sig", errors="replace") as handle:
+                raw = handle.read()
+        except OSError as exc:
+            log(f"cannot read --from: {exc}")
+            return EXIT_USAGE
+        origin = os.path.abspath(args.source)
+        log(f"reading {origin} ({len(raw)} bytes)")
+    else:
+        origin = args.url
+        log(f"fetching {origin}")
+        try:
+            raw, ctype = diga.fetch(origin, timeout=args.timeout)
+        except (OSError, ValueError) as exc:
+            log(f"fetch failed: {exc}")
+            log("  If this machine cannot reach the site, save the page in a "
+                "browser and use --from instead.")
+            return EXIT_ERROR
+        log(f"  {len(raw)} bytes, {ctype or 'no content type'}")
+
+    entries, report = diga.extract(raw, hint=DIGA_HINTS.get(args.as_kind),
+                                   source=origin)
+    log(f"  {report.summary()}")
+    for note in report.notes:
+        log(f"  {note}", indent=True)
+
+    if args.report:
+        with open(args.report, "w", encoding="utf-8") as handle:
+            handle.write(report.text(sample=raw))
+        log(f"  extraction report: {os.path.abspath(args.report)}")
+
+    if not entries:
+        log(NO_ENTRIES_HELP.rstrip())
+        return EXIT_ERROR
+
+    fetched = [diga.to_row(entry) for entry in entries]
+
+    if not args.out:
+        # Preview is the default: an unverified parser must not be able to
+        # overwrite a curated list just because someone ran the command.
+        log("")
+        log(f"{len(fetched)} row(s). Nothing was written - pass --out FILE to save.")
+        print(",".join(diga.CSV_COLUMNS))
+        for row in fetched:
+            print(",".join(_csv_cell(row[column]) for column in diga.CSV_COLUMNS))
+        return EXIT_OK
+
+    existing = [] if args.replace else diga.read_rows(args.out)
+    rows, changes = diga.merge(existing, fetched)
+
+    log("")
+    log(f"{len(rows)} row(s) -> {os.path.abspath(args.out)}")
+    log(f"  {len(changes['added'])} added"
+        + (f": {', '.join(changes['added'][:12])}"
+           + (" ..." if len(changes["added"]) > 12 else "") if changes["added"] else ""))
+    log(f"  {len(changes['unchanged'])} already present, curated keys kept")
+    if changes["enriched"]:
+        log(f"  {len(changes['enriched'])} description(s) filled in")
+    if changes["missing_from_source"]:
+        log(f"  {len(changes['missing_from_source'])} row(s) the source no longer "
+            "lists, kept anyway - a delisted app may still be registered:")
+        log("    " + ", ".join(changes["missing_from_source"][:12])
+            + (" ..." if len(changes["missing_from_source"]) > 12 else ""), indent=True)
+
+    diga.write_rows(args.out, rows)
+    notes = diga.provenance(args.out, origin, report, rows, changes, raw=raw)
+    log(f"  provenance: {os.path.abspath(notes)}")
+    log("")
+    log("Next: python -m eudamed search --input "
+        f"{args.out} --software-only --out diga")
+    return EXIT_OK
+
+
+def _csv_cell(value):
+    """Quote a preview cell the way csv.writer would."""
+    text = str(value or "")
+    if any(ch in text for ch in ',"\n'):
+        return '"' + text.replace('"', '""') + '"'
+    return text
 
 
 # ---------------------------------------------------------------- actors
@@ -986,6 +1112,31 @@ def build_parser():
     mfr.add_argument("--keep-raw", action="store_true")
     add_common(mfr)
     mfr.set_defaults(func=cmd_manufacturer)
+
+    dg = subs.add_parser(
+        "diga", help="build a search input CSV from a published directory listing")
+    src = dg.add_argument_group("input (give exactly one)")
+    src.add_argument("--from", dest="source", metavar="FILE",
+                     help="a saved page, JSON response, spreadsheet export or "
+                          "plain list of names")
+    src.add_argument("--url", nargs="?", const=diga.DEFAULT_URL, default=None,
+                     metavar="URL",
+                     help=f"fetch this URL (bare --url uses {diga.DEFAULT_URL}). "
+                          "An API URL found in your browser's network tab works too")
+    dg.add_argument("--as", dest="as_kind", choices=sorted(DIGA_HINTS),
+                    help="force the extractor instead of detecting it")
+    dg.add_argument("--out", metavar="FILE",
+                    help="write this CSV, merging into it if it exists. Without "
+                         "--out nothing is written and the rows are printed")
+    dg.add_argument("--report", metavar="FILE",
+                    help="write what the extractor saw, for diagnosing a bad parse")
+    dg.add_argument("--replace", action="store_true",
+                    help="start from scratch instead of merging, discarding the "
+                         "curated keys/broad terms already in --out")
+    dg.add_argument("--force", action="store_true", help="confirm --replace")
+    dg.add_argument("--timeout", type=float, default=30)
+    dg.add_argument("--verbose", "-v", action="store_true")
+    dg.set_defaults(func=cmd_diga)
 
     return parser
 

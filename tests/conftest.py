@@ -107,6 +107,20 @@ class UIClient:
     def json(self, path):
         return json.loads(self._open(path)[1])
 
+    def post(self, path, payload):
+        """POST JSON, returning (status, parsed body)."""
+        import urllib.error
+        import urllib.request
+        request = urllib.request.Request(
+            self.base + path, method="POST",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
 
 @pytest.fixture
 def ui_server_fresh(live_server):

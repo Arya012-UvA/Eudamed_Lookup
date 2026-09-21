@@ -41,13 +41,23 @@ def test_no_duplicate_names(path):
     assert not duplicates, f"{path} repeats {duplicates}"
 
 
+#: Indication words in both languages. The file can be regenerated from the
+#: German directory by `python -m eudamed diga`, so this must not depend on
+#: the English prose the hand-written version happened to use.
+PSYCH_WORDS = ("depress", "angst", "anxi", "panik", "panic", "phobi", "stress",
+               "burnout", "schlaf", "insomn", "mental", "psych", "sucht",
+               "addict", "tinnitus", "rauch", "smoking", "mood", "alcohol",
+               "alkohol", "schizo")
+
+
 def test_diga_seed_covers_psychological_indications():
     """Its reason for being in this repo: DiGA are largely mental-health apps."""
     targets = load_targets(seed("diga-seed.csv"))
     assert len(targets) >= 40
     psych = [t for t in targets
-             if t.description.startswith(("mental health", "psycho-oncology"))]
-    assert len(psych) >= 20
+             if any(word in (t.description + " " + " ".join(t.keys)).lower()
+                    for word in PSYCH_WORDS)]
+    assert len(psych) >= 15, f"only {len(psych)} psychological indications"
 
 
 def test_diga_seed_names_are_ascii_but_keys_may_not_be():

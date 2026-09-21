@@ -20,7 +20,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, devicetype
+from . import config, devicetype, diga
 from .client import ApiError, AuthError
 from .matching import FOUND, POSSIBLE
 from .records import Actor, Device
@@ -44,8 +44,38 @@ class UIServer(ThreadingHTTPServer):
         # can be picked instead of typed, and the whole list run in one go.
         self.targets = list(targets or ())
         self.targets_by_name = {t.name.lower(): t for t in self.targets}
+        # The list can be replaced at runtime by the seed builder, and this is
+        # a threading server, so the two views are swapped together.
+        self._targets_lock = threading.Lock()
         self._ref = None
         self._ref_lock = threading.Lock()
+
+    def set_targets(self, targets, add=False):
+        """Replace (or extend) the device list the page offers.
+
+        Lets a list built in the browser be searched immediately, instead of
+        needing the server restarted with a different --input.
+        """
+        with self._targets_lock:
+            if add:
+                known = {t.name.lower() for t in self.targets}
+                merged = list(self.targets) + [t for t in targets
+                                               if t.name.lower() not in known]
+            else:
+                merged = list(targets)
+            self.targets = merged
+            self.targets_by_name = {t.name.lower(): t for t in merged}
+            return len(merged)
+
+    def can_fetch(self):
+        """Whether to allow server-side fetching of a URL the page supplies.
+
+        Only when bound to loopback. On a publicly bound server that would be
+        a request forwarder for anyone who can reach the port, which is a very
+        different thing from a local convenience.
+        """
+        host = self.server_address[0]
+        return host in ("127.0.0.1", "::1", "localhost")
 
     def detail_client(self):
         """A client that can fetch a per-device detail record, if any.
@@ -129,6 +159,9 @@ class Handler(BaseHTTPRequestHandler):
                     # The web-UI backend's list rows carry no EMDN code, so the
                     # device-type filter needs a detail endpoint to be useful.
                     "has_detail": self.server.detail_client() is not None,
+                    # The seed builder: can the page fetch a URL server-side,
+                    # or only accept pasted / uploaded text?
+                    "can_fetch": self.server.can_fetch(),
                 })
             elif parsed.path == "/api/devices":
                 self._json(200, {"devices": [t.to_dict() for t in self.server.targets]})
@@ -153,6 +186,89 @@ class Handler(BaseHTTPRequestHandler):
             if self.server.verbose:
                 traceback.print_exc()
             self._json(500, {"error": "internal error", "detail": traceback.format_exc(limit=3)})
+
+    #: A pasted directory listing is large but not unbounded.
+    MAX_BODY = 4 * 1024 * 1024
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        try:
+            if parsed.path != "/api/seed":
+                self._json(404, {"error": f"no such path: {parsed.path}"})
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > self.MAX_BODY:
+                self._json(413, {"error": f"body over {self.MAX_BODY} bytes"})
+                return
+            raw = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+            self._seed(raw)
+        except BrokenPipeError:
+            pass
+        except Exception:                                   # noqa: BLE001
+            if self.server.verbose:
+                traceback.print_exc()
+            self._json(500, {"error": "internal error",
+                             "detail": traceback.format_exc(limit=3)})
+
+    def _seed(self, body):
+        """Build device rows from a pasted listing, a URL, or an upload.
+
+        Same extractors as the `diga` command, so the browser and the CLI
+        cannot disagree about what a listing contains.
+        """
+        try:
+            payload = json.loads(body or "{}")
+        except json.JSONDecodeError as exc:
+            self._json(400, {"error": f"body is not JSON: {exc}"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "body must be a JSON object"})
+            return
+
+        text = str(payload.get("text") or "")
+        url = str(payload.get("url") or "").strip()
+        if url:
+            if not self.server.can_fetch():
+                self._json(403, {
+                    "error": "fetching a URL is disabled because this server is "
+                             "not bound to localhost; paste the listing instead"})
+                return
+            if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+                self._json(400, {"error": "url must be http or https"})
+                return
+            try:
+                text, _ = diga.fetch(url, timeout=float(payload.get("timeout") or 30))
+            except (OSError, ValueError) as exc:
+                self._json(502, {"error": "fetch failed", "detail": str(exc)})
+                return
+        if not text.strip():
+            self._json(400, {"error": "give text to parse, or a url to fetch"})
+            return
+
+        hint = payload.get("hint") or None
+        entries, report = diga.extract(text, hint=hint, source=url or "pasted text")
+        rows = [diga.to_row(entry) for entry in entries]
+
+        mode = payload.get("mode") or "preview"
+        loaded = None
+        if rows and mode in ("replace", "add"):
+            targets = [Target(name=row["name"], description=row["description"],
+                              keys=[k for k in row["keys"].split("|") if k],
+                              broad=[b for b in row["broad"].split("|") if b])
+                       for row in rows]
+            loaded = self.server.set_targets(targets, add=(mode == "add"))
+
+        self._json(200, {
+            "rows": rows,
+            "columns": diga.CSV_COLUMNS,
+            "extractor": report.extractor,
+            "accepted": report.candidates,
+            "rejected": [{"value": v, "reason": r} for v, r in report.rejected],
+            "notes": report.notes,
+            "mode": mode,
+            "loaded": loaded,
+            "bytes": len(text),
+        })
 
     def _search(self, query):
         # ?target=<name> uses that device's full definition from the loaded CSV
@@ -486,8 +602,10 @@ main{max-width:920px;margin:0 auto;padding:28px 16px 72px}
 h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}
 .sub{color:var(--muted);font-size:13px;margin:0 0 20px}
 form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-input,select,button{font:inherit;padding:9px 11px;border:1px solid var(--line);
+input,select,button,textarea{font:inherit;padding:9px 11px;border:1px solid var(--line);
 border-radius:7px;background:var(--card);color:var(--ink)}
+textarea{width:100%;margin-top:9px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:13px;resize:vertical}
 #name{flex:1;min-width:220px;font-size:16px}
 button{background:var(--accent);color:#fff;border-color:transparent;cursor:pointer;font-weight:600;
 padding-inline:18px}
@@ -620,6 +738,38 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
   <div id="summary"></div>
 </section>
 
+<details class="panel" id="seedpanel">
+  <summary><strong>Build a device list</strong> &mdash; from a directory listing you paste or fetch</summary>
+  <p class="hint">Turns a published listing (the BfArM DiGA-Verzeichnis, or any other)
+  into a searchable device list. Paste the names, drop in a saved page or a JSON
+  response, or fetch a URL. Same extractors as <code>python -m eudamed diga</code>, so
+  the two cannot disagree.</p>
+  <div class="row" style="margin-top:11px">
+    <input id="s_url" placeholder="Fetch a URL, e.g. https://diga.bfarm.de/de/verzeichnis"
+           aria-label="Directory URL" style="flex:1;min-width:240px">
+    <select id="s_hint" aria-label="Force extractor">
+      <option value="">Detect format</option>
+      <option value="text list">Plain list</option>
+      <option value="json">JSON</option>
+      <option value="html">HTML</option>
+      <option value="csv">CSV</option>
+    </select>
+    <button id="s_fetch" type="button">Fetch</button>
+  </div>
+  <div class="row" style="margin-top:9px">
+    <input id="s_file" type="file" accept=".html,.htm,.json,.csv,.tsv,.txt,.md"
+           aria-label="Saved page, JSON or CSV file">
+  </div>
+  <textarea id="s_text" rows="5" spellcheck="false"
+    placeholder="&hellip;or paste one name per line, optionally &quot;Name &ndash; indication&quot;:&#10;deprexis &ndash; Depression&#10;velibra &ndash; Angstst&ouml;rungen"
+    aria-label="Paste a listing"></textarea>
+  <div class="row" style="margin-top:9px">
+    <button id="s_go" type="button">Build list</button>
+    <span class="sub" id="s_note"></span>
+  </div>
+  <div id="s_out"></div>
+</details>
+
 <details class="panel" id="mfrpanel">
   <summary><strong>Search by manufacturer</strong> &mdash; every device one company registered</summary>
   <div class="row" style="margin-top:11px">
@@ -690,19 +840,25 @@ fetch("/api/health").then(r => r.json()).then(h => {
   }
 }).catch(() => { $("sub").textContent = "cannot reach the local server"; });
 
-fetch("/api/devices").then(r => r.json()).then(d => {
-  DEVICES = d.devices || [];
-  if (!DEVICES.length) return;
-  $("mylist").hidden = false;
+/* Delegated once, not per render: the buttons are rebuilt whenever the list
+   changes, and re-binding here would stack a listener each time. */
+$("namebtns").addEventListener("click", e => {
+  const btn = e.target.closest(".name-btn");
+  if (btn) runOne(DEVICES[+btn.dataset.i].name, btn);
+});
+
+async function reloadDevices() {
+  try {
+    const d = await (await fetch("/api/devices")).json();
+    DEVICES = d.devices || [];
+  } catch (e) { return; }
+  $("mylist").hidden = !DEVICES.length;
   $("listcount").textContent = DEVICES.length;
   $("names").innerHTML = DEVICES.map(x => `<option value="${esc(x.name)}">`).join("");
   $("namebtns").innerHTML = DEVICES.map((x, i) =>
     `<button type="button" class="name-btn" data-i="${i}" title="${esc(x.description || "")}">${esc(x.name)}</button>`).join("");
-  $("namebtns").addEventListener("click", e => {
-    const btn = e.target.closest(".name-btn");
-    if (btn) runOne(DEVICES[+btn.dataset.i].name, btn);
-  });
-}).catch(() => {});
+}
+reloadDevices();
 
 const dropCount = d => Object.values(d.dropped_kinds || {}).reduce((a, b) => a + b, 0);
 
@@ -988,6 +1144,92 @@ $("d_go").addEventListener("click", async () => {
     $("d_go").disabled = false;
   }
 });
+
+/* Build a device list from a directory listing. The extraction happens on the
+   server so the browser and the CLI share one implementation. */
+let SEED = [];
+
+$("s_file").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  $("s_text").value = await file.text();
+  $("s_note").textContent = `${file.name} loaded (${file.size} bytes) \u2014 press Build list`;
+});
+
+async function buildSeed(mode, url) {
+  const body = { mode, hint: $("s_hint").value || null };
+  if (url) body.url = url; else body.text = $("s_text").value;
+  if (!url && !body.text.trim()) {
+    $("s_note").textContent = "Paste a listing, choose a file, or give a URL.";
+    return;
+  }
+  for (const id of ["s_go", "s_fetch"]) $(id).disabled = true;
+  $("s_note").innerHTML = `<span class="spin"></span> ${url ? "fetching" : "parsing"}&hellip;`;
+  try {
+    const r = await fetch("/api/seed", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || "request failed");
+    SEED = d.rows || [];
+    $("s_note").textContent = `${d.extractor}: ${d.accepted} accepted, `
+      + `${d.rejected.length} rejected, from ${d.bytes} bytes`;
+    renderSeed(d);
+    if (d.loaded !== null && d.loaded !== undefined) {
+      // The page's device list changed underneath us, so refresh it.
+      await reloadDevices();
+      $("s_note").textContent += ` \u00b7 My list now holds ${d.loaded} device(s)`;
+    }
+  } catch (err) {
+    $("s_note").textContent = "";
+    $("s_out").innerHTML = `<div class="errbox">${esc(err.message)}</div>`;
+  } finally {
+    for (const id of ["s_go", "s_fetch"]) $(id).disabled = false;
+  }
+}
+
+function renderSeed(d) {
+  if (!d.rows.length) {
+    // Do not report an empty parse as a result; say what to try instead.
+    $("s_out").innerHTML = `<div class="errbox"><strong>Nothing in that looked like a
+      product listing.</strong> If you fetched a URL, the directory is most likely a
+      JavaScript application: a plain fetch returns the page shell and the entries
+      arrive later, in the browser. Open it yourself, wait for the list, then either
+      save the page and choose the file above, or open devtools
+      (<kbd>F12</kbd>) &rarr; Network &rarr; XHR, reload, and paste the response of the
+      request that returns the list. A plain list of names, one per line, always works.
+      ${(d.notes || []).length ? `<br><br>Extractor notes: ${d.notes.map(esc).join("; ")}` : ""}
+      </div>`;
+    return;
+  }
+  const rows = d.rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.description)}</td>
+    <td><code>${esc(r.keys)}</code></td><td><code>${esc(r.broad)}</code></td></tr>`).join("");
+  $("s_out").innerHTML =
+    `<div class="row" style="margin:12px 0 0">
+       <button id="s_replace" type="button">Use as My list</button>
+       <button id="s_add" type="button">Add to My list</button>
+       <a id="s_dl" download="diga-seed.csv">Download CSV</a>
+     </div>
+     <p class="hint">Loading the list only changes this page's device buttons; it does not
+     write a file. Download the CSV to keep it, or use
+     <code>python -m eudamed diga --from &hellip; --out diga-seed.csv</code>, which also
+     merges into an existing list and records where it came from.</p>
+     <table class="sum"><thead><tr><th>Name</th><th>Indication</th><th>Query keys</th>
+     <th>Widen on</th></tr></thead><tbody>${rows}</tbody></table>`
+    + (d.rejected.length ? `<p class="meta">Rejected ${d.rejected.length}: `
+        + d.rejected.slice(0, 12).map(x => `<code>${esc(x.value)}</code> (${esc(x.reason)})`).join(", ")
+        + (d.rejected.length > 12 ? ", &hellip;" : "") + `</p>` : "");
+
+  const csv = [d.columns.join(",")].concat(d.rows.map(r =>
+    d.columns.map(c => /[,"\\n]/.test(r[c] || "") ? `"${String(r[c]).replace(/"/g, '""')}"`
+                                                  : (r[c] || "")).join(","))).join("\\n");
+  $("s_dl").href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+  $("s_replace").addEventListener("click", () => buildSeed("replace", null));
+  $("s_add").addEventListener("click", () => buildSeed("add", null));
+}
+
+$("s_go").addEventListener("click", () => buildSeed("preview", null));
+$("s_fetch").addEventListener("click", () => buildSeed("preview", $("s_url").value.trim()));
 
 /* Manufacturer -> SRN -> devices. The two-step lookup lives on the server;
    this only renders it. */

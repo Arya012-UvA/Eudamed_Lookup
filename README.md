@@ -73,8 +73,9 @@ If a request does fail, distinguish the cause:
 ## Commands
 
 `probe` first, then `search` for names you have, `manufacturer` for a company's
-whole catalogue, and `discover` or the substring sweep for devices you cannot
-name. `serve` puts the first three in a browser.
+whole catalogue, `diga` to build a list from a published directory, and
+`discover` or the substring sweep for devices you cannot name. `serve` puts all
+of those except `probe` in a browser.
 
 ### `probe` — run this first
 
@@ -99,7 +100,8 @@ a CSV. The subscription key stays in this process and is never sent to the
 browser, which also sidesteps the CORS restrictions that block calling the API
 directly from a page.
 
-Three panels, matching the commands below: the name search at the top,
+Four panels, matching the commands below: the name search at the top,
+**Build a device list** (turn a published directory into searchable rows),
 **Search by manufacturer** (name → SRN → devices), and **Discover by filter**.
 The `Software only` option under *Options* applies to all three, and the name
 search and the manufacturer panel both offer `report.md` / `results.csv` /
@@ -258,12 +260,65 @@ Budget for it: 47 rows with variant spellings, two name columns and the
 fallback comes to roughly 230 requests, so about a minute at the default
 `--delay 0.2`.
 
-**Read [`diga-seed.NOTES.md`](diga-seed.NOTES.md) before quoting the file.**
-The names were compiled from the model's own knowledge, not fetched from BfArM
-— this sandbox blocks every EU host — so some may be misspelled, superseded or
-delisted, and the list is not complete. A wrong name is cheap (that row just
-reports *not found*), but do not cite the file as evidence that something is or
-is not a DiGA. The notes explain how to refresh it from the directory.
+**Read [`diga-seed.NOTES.md`](diga-seed.NOTES.md) before quoting the committed
+version.** Those names were compiled from the model's own knowledge, not
+fetched from BfArM — the sandbox they were written in blocks every EU host — so
+some may be misspelled, superseded or delisted, and the list is not complete.
+17 of the 47 are independently corroborated by `devices.csv`; the rest are
+recall. A wrong name is cheap (that row just reports *not found*), but do not
+cite the file as evidence that something is or is not a DiGA.
+
+Replace it with sourced data using `diga`, below.
+
+### `diga` — build a device list from a published directory
+
+```bash
+# preview: nothing is written without --out
+python3 -m eudamed diga --url https://diga.bfarm.de/de/verzeichnis
+
+# from a page saved in your browser, or a JSON response from devtools
+python3 -m eudamed diga --from saved-page.html --report diga-report.txt
+
+# write, merging into the existing list
+python3 -m eudamed diga --from saved-page.html --out diga-seed.csv
+```
+
+It accepts whatever you can actually get hold of and detects which it is:
+
+| Input | How you get it |
+| --- | --- |
+| Plain list | Type or paste the names, one per line, optionally `Name – indication`. Never mis-parsed |
+| JSON | `F12` → Network → XHR → reload → copy the response of the request that returns the list. Or pass that request's URL to `--url` |
+| HTML | Open the directory, wait for the list, `Ctrl+S` |
+| CSV / TSV | A spreadsheet export, if the site offers one |
+
+**Expect a plain `--url` fetch to find nothing.** The directory is most likely
+a JavaScript application, so a `GET` returns the page shell and the entries
+arrive later, in the browser. That is designed for, not a failure: the command
+prints the three alternatives above. `--report FILE` records what the extractor
+saw, which is the fastest way to get the HTML selectors fixed — they were
+written without ever seeing the site's markup, and that is the one part of this
+that is a guess.
+
+Three safeguards worth knowing:
+
+- **Preview is the default.** Without `--out`, nothing is written, so an
+  unverified parser cannot overwrite a curated list.
+- **`--out` merges.** A product already in the file keeps its hand-tuned
+  `keys` and `broad`; only a blank `description` is filled in. The printed diff
+  is the useful part of a refresh — *"the directory now lists 4 apps you did
+  not have"*. `--replace` discards curation and needs `--force`.
+- **A product the directory dropped is kept and reported**, not deleted: a
+  delisted DiGA may still be registered in EUDAMED.
+
+Every write also produces `<name>.provenance.md` — source, timestamp,
+extractor, input checksum and the diff. It has to be a sidecar rather than a
+comment header, because a `#` line in the CSV makes `load_targets` reject the
+whole file.
+
+In the browser, the same thing lives under **Build a device list**: paste,
+upload or fetch, then *Use as My list* to search the result immediately
+without restarting the server, or *Download CSV* to keep it.
 
 ### `--software-only` — filter by device type, not by wording
 
@@ -510,7 +565,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 335 tests
+pytest -q          # 391 tests
 ruff check eudamed tests
 ```
 
@@ -791,19 +846,21 @@ eudamed/
   reference.py    /reference id -> code resolution, ambiguity-safe
   matching.py     normalisation and typed-evidence scoring
   devicetype.py   is this row software? three-valued, with the detail lookup
+  diga.py         directory listing -> device list: extractors, merge, provenance
   search.py       orchestration: targets -> ranked candidates, manufacturer -> devices
   report.py       JSON / CSV / HTML writers
-  cli.py          argparse CLI: search, manufacturer, actors, reference, probe,
-                  serve, filtertest, discover, raw
+  cli.py          argparse CLI: search, manufacturer, diga, actors, reference,
+                  probe, serve, filtertest, discover, raw
   ui_backend.py   the EUDAMED website's backend: substring search, paginated
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            335 tests, no network required
+tests/            391 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 
 devices.csv          the 23-device working list
 diga-seed.csv        DiGA directory as a seed list (see diga-seed.NOTES.md)
+                     rebuild it with: python3 -m eudamed diga
 psych-devices.csv    the mental-health subset of devices.csv
 psych-discovery.csv  16 substring stems for a blind sweep
 ```
