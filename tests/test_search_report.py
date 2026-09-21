@@ -301,3 +301,85 @@ def test_identifier_in_broad_does_not_become_a_match(client_factory):
     assert by_name["MindDoc"]["matched_on"] == "trade_name:exact"
     assert by_name["Moodpath"]["matched_on"] == "manufacturer"
     assert by_name["Moodpath"]["score"] < 0.6
+
+
+# --- markdown report ----------------------------------------------------
+def test_markdown_report_has_summary_and_per_device_sections(tmp_path, client_factory):
+    from eudamed.report import write_markdown
+    results = _results(client_factory)
+    path = tmp_path / "report.md"
+    write_markdown(results, path, {"generated": "2026-01-01 00:00", "base": "x",
+                                   "requests": 4})
+    md = path.read_text(encoding="utf-8")
+    assert md.startswith("# EUDAMED device report")
+    assert "## Summary" in md and "| Device | Status |" in md
+    assert "## MindDoc" in md and "## Nope" in md
+    assert "### Candidate 1: MindDoc" in md
+    assert "**Identification**" in md
+    assert "**Economic operators**" in md and "**Queries issued**" in md
+    assert "do not confirm registration" in md
+    # An empty section is omitted rather than printed as an empty table: these
+    # rows carry no resolved classification labels.
+    assert "**Classification**" not in md
+
+
+def test_markdown_shows_classification_once_codes_are_resolved(tmp_path, client_factory):
+    from eudamed.report import write_markdown
+    ref = Reference(client_factory(opener=json_opener([
+        {"ID": 2.0, "CODE": "RISK_CLASS_ID", "LANGUAGE": "en", "VALUE": "Class IIa"},
+    ]))).load()
+    client = client_factory(opener=json_opener(ROWS))
+    result = search_target(client, Target("MindDoc", country="DE", keys=["MindDoc"]),
+                           reference=ref)
+    path = tmp_path / "r.md"
+    write_markdown([result], path)
+    md = path.read_text(encoding="utf-8")
+    assert "**Classification**" in md
+    assert "| Risk class | Class IIa |" in md
+
+
+def test_markdown_flags_a_manufacturer_only_lead(tmp_path, client_factory):
+    from eudamed.report import write_markdown
+    client = client_factory(opener=json_opener([ROWS[1]]))
+    result = search_target(client, Target("MindDoc", country="DE", keys=["MindDoc"]))
+    path = tmp_path / "r.md"
+    write_markdown([result], path)
+    md = path.read_text(encoding="utf-8")
+    assert "Manufacturer-name match only" in md
+    assert "a lead, not a match" in md
+
+
+def test_markdown_says_error_is_not_absence(tmp_path, client_factory):
+    from eudamed.report import write_markdown
+    client = client_factory(opener=error_opener(500), retries=1)
+    result = search_target(client, Target("MindDoc", keys=["MindDoc"]))
+    path = tmp_path / "r.md"
+    write_markdown([result], path)
+    md = path.read_text(encoding="utf-8")
+    assert "Not checked" in md
+    assert "unknown rather than absent" in md
+
+
+def test_markdown_not_found_is_not_stated_as_proof_of_absence(tmp_path, client_factory):
+    from eudamed.report import write_markdown
+    client = client_factory(opener=json_opener([]))
+    result = search_target(client, Target("Nope", keys=["ZZZ"]))
+    path = tmp_path / "r.md"
+    write_markdown([result], path)
+    assert "not proof of absence" in path.read_text(encoding="utf-8")
+
+
+def test_markdown_escapes_pipes(tmp_path, client_factory):
+    from eudamed.report import write_markdown
+    client = client_factory(opener=json_opener(
+        [{"TRADE_NAME": "A|B pipe", "MF_SRN": "DE-MF-1", "UUID": "u"}]))
+    result = search_target(client, Target("A|B pipe", keys=["A|B pipe"]))
+    path = tmp_path / "r.md"
+    write_markdown([result], path)
+    md = path.read_text(encoding="utf-8")
+    assert "A\\|B pipe" in md          # would break the table otherwise
+
+
+def test_write_all_includes_markdown(tmp_path, client_factory):
+    paths = write_all(_results(client_factory), str(tmp_path / "out"), {"base": "x"})
+    assert "md" in paths and Path(paths["md"]).read_text(encoding="utf-8")

@@ -62,6 +62,165 @@ def write_html(results, path, meta=None):
         handle.write(html)
 
 
+MD_SECTIONS = [
+    ("Identification", [
+        ("Trade name", "trade_name"), ("Device name", "device_name"),
+        ("Model", "device_model"), ("Reference", "reference"),
+        ("UDI-DI (primary)", "primary_di"), ("Secondary DI", "secondary_di"),
+        ("Basic UDI-DI", "basic_udi"), ("EUDAMED UUID", "uuid"),
+    ]),
+    ("Classification", [
+        ("Risk class", "risk_class"), ("Applicable legislation", "legislation"),
+        ("Special device type", "special_type"),
+        ("EMDN / nomenclature code", "nomenclature_code"),
+        ("Intended medical purpose", "medical_purpose"),
+    ]),
+    ("Status and market", [
+        ("Device status", "device_status"), ("Placed on the market in", "placed_on_market"),
+        ("Active", "active"), ("Latest version", "latest_version"), ("Version", "version"),
+    ]),
+    ("Economic operators", [
+        ("Manufacturer", "manufacturer_name"), ("Manufacturer SRN", "mf_srn"),
+        ("Manufacturer country", "manufacturer_country"),
+        ("Authorised representative", "authorised_rep"),
+        ("Authorised rep. SRN", "authorised_rep_srn"),
+    ]),
+    ("Match provenance", [
+        ("Score", "score"), ("Evidence", "matched_on"), ("EUDAMED link", "link"),
+    ]),
+]
+
+
+def _md_escape(value):
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def write_markdown(results, path, meta=None):
+    """A detailed per-device report, readable as-is and printable to PDF."""
+    meta = meta or {}
+    out = []
+    add = out.append
+
+    add("# EUDAMED device report")
+    add("")
+    add(f"- Generated: {meta.get('generated', '')}")
+    add(f"- Source: `{meta.get('base', '')}`")
+    if meta.get("fields"):
+        add(f"- Searched on: `{meta['fields']}`")
+    add(f"- Devices in this report: {len(results)}")
+    add(f"- Requests issued: {meta.get('requests', '?')}")
+    add("")
+    add("> Scores rank candidates; they do not confirm registration. Verify every")
+    add("> match through its EUDAMED link before relying on it.")
+    add("")
+
+    tally = {}
+    for r in results:
+        tally[r["status"]] = tally.get(r["status"], 0) + 1
+    add("## Summary")
+    add("")
+    add("| Device | Status | Best match | Manufacturer | Risk class | Evidence |")
+    add("| --- | --- | --- | --- | --- | --- |")
+    for r in results:
+        best = r["candidates"][0] if (
+            r["candidates"] and r["status"] not in ("not found", "error")) else {}
+        add("| {} | {} | {} | {} | {} | {} |".format(
+            _md_escape(r["name"]), r["status"],
+            _md_escape(best.get("trade_name", "\u2014")),
+            _md_escape(best.get("manufacturer_name", "\u2014")),
+            _md_escape(best.get("risk_class", "\u2014")),
+            _md_escape(best.get("matched_on", "\u2014"))))
+    add("")
+    add("Totals: " + ", ".join(f"**{n}** {k}" for k, n in sorted(tally.items())))
+    add("")
+
+    for r in results:
+        add("---")
+        add("")
+        add(f"## {r['name']}")
+        add("")
+        if r.get("description"):
+            add(f"*{r['description']}*")
+            add("")
+        facts = []
+        if r.get("ca"):
+            facts.append(f"Competent authority as listed: {r['ca']}")
+        if r.get("country"):
+            facts.append(f"Expected manufacturer country: {r['country']}")
+        facts.append(f"Status: **{r['status']}**")
+        facts.append(f"Rows returned by the API: {r.get('total_matches', 0)}")
+        for f in facts:
+            add(f"- {f}")
+        add("")
+
+        if r["status"] == "error":
+            add("> **Not checked.** Every request for this device failed, so its")
+            add("> registration is unknown rather than absent.")
+            add("")
+            for err in r.get("errors", []):
+                add(f"- `{err}`")
+            add("")
+            continue
+
+        if not r["candidates"]:
+            add("No candidate scored above the minimum. This is not proof of absence:")
+            add("the device may be registered under a different trade name, or the")
+            add("filter may not match the way the term was typed.")
+            add("")
+        for n, cand in enumerate(r["candidates"], start=1):
+            label = cand.get("trade_name") or cand.get("device_name") or "(unnamed)"
+            add(f"### Candidate {n}: {label}")
+            add("")
+            if cand.get("matched_on") == "manufacturer":
+                add("> **Manufacturer-name match only.** The trade name does not match")
+                add("> the device searched for. Scored below the match threshold; treat")
+                add("> this as a lead, not a match.")
+                add("")
+            for section, fields in MD_SECTIONS:
+                rows = [(lbl, cand.get(key)) for lbl, key in fields
+                        if cand.get(key) not in (None, "", [])]
+                if not rows:
+                    continue
+                add(f"**{section}**")
+                add("")
+                add("| Field | Value |")
+                add("| --- | --- |")
+                for lbl, val in rows:
+                    add(f"| {lbl} | {_md_escape(val)} |")
+                add("")
+            extra = {k: v for k, v in cand.items()
+                     if k not in {key for _, fs in MD_SECTIONS for _, key in fs}
+                     and k != "raw" and v not in (None, "", [])}
+            if extra:
+                add("**Other reported fields**")
+                add("")
+                add("| Field | Value |")
+                add("| --- | --- |")
+                for k in sorted(extra):
+                    add(f"| {k} | {_md_escape(extra[k])} |")
+                add("")
+
+        queries = r.get("queries") or []
+        if queries:
+            add("**Queries issued**")
+            add("")
+            add("| Parameter | Term | Result |")
+            add("| --- | --- | --- |")
+            for q in queries:
+                outcome = "error" if q.get("error") else f"{q.get('rows', 0)} row(s)"
+                add(f"| `{q.get('param', '')}` | {_md_escape(q.get('term', ''))} | {outcome} |")
+            add("")
+        if r.get("errors"):
+            add("**Errors**")
+            add("")
+            for err in r["errors"]:
+                add(f"- `{err}`")
+            add("")
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(out) + "\n")
+
+
 def write_all(results, outdir, meta=None):
     os.makedirs(outdir, exist_ok=True)
     meta = {"generated": time.strftime("%Y-%m-%d %H:%M"), **(meta or {})}
@@ -69,10 +228,12 @@ def write_all(results, outdir, meta=None):
         "json": os.path.join(outdir, "results.json"),
         "csv": os.path.join(outdir, "results.csv"),
         "html": os.path.join(outdir, "report.html"),
+        "md": os.path.join(outdir, "report.md"),
     }
     write_json(results, paths["json"], meta)
     write_csv(results, paths["csv"])
     write_html(results, paths["html"], meta)
+    write_markdown(results, paths["md"], meta)
     return paths
 
 

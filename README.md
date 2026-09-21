@@ -134,6 +134,28 @@ Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated
 an identifier match rather than a name comparison, so pasting an SRN lists
 every device that manufacturer has registered.
 
+### `discover` — find devices by filter, not by name
+
+For questions like *"all class I software for psychological conditions"*, where
+you have no list of trade names to start from:
+
+```bash
+python3 -m eudamed discover --risk-class I --keyword depression,anxiety,mental --out psych
+```
+
+`--risk-class` takes a human class (`I`, `IIa`, `IIb`, `III`) and resolves it
+through `/reference`, since `RISK_CLASS_ID` is numeric. Other filters:
+`--nomenclature` (EMDN), `--medical-purpose`, `--device-name`, `--trade-name`,
+`--mf-srn`, `--legislation-id`.
+
+`--keyword` is applied **locally** to the rows that come back, for concepts the
+API cannot filter on server-side. It narrows, it does not search — anything the
+server filter excluded was never retrieved.
+
+If the result comes back at exactly 1000 rows it is **truncated** by the server
+cap and the command says so. Narrow the filters rather than treating it as
+complete.
+
 ### `filtertest` — how does `/udi` filtering actually behave?
 
 The spec documents the filter parameters but not their semantics, and a plain
@@ -177,6 +199,7 @@ Outputs land in `--out` (default `eudamed_results/`):
 | --- | --- |
 | `results.json` | Everything: all candidates, every query, every error, run metadata |
 | `results.csv` | One row per device — the best match, flattened |
+| `report.md` | Detailed per-device write-up: every populated field, grouped, plus the queries issued. Print or convert to PDF |
 | `report.html` | Browsable report; click a row for all candidates. No network needed to view |
 
 ### `actors`, `reference`
@@ -300,7 +323,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 189 tests
+pytest -q          # 202 tests
 ruff check eudamed tests
 ```
 
@@ -446,10 +469,10 @@ eudamed/
   search.py       orchestration: targets -> ranked candidates
   report.py       JSON / CSV / HTML writers
   cli.py          argparse CLI: search, actors, reference, probe, serve,
-                  filtertest, raw
+                  filtertest, discover, raw
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            189 tests, no network required
+tests/            202 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

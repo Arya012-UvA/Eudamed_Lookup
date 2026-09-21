@@ -136,7 +136,7 @@ def cmd_search(args):
              for s in ("found", "possible", "not found")}
     log("")
     log(f"{tally}  in {client.request_count} request(s)")
-    for kind in ("json", "csv", "html"):
+    for kind in ("json", "csv", "md", "html"):
         log(f"  {kind:4} {os.path.abspath(paths[kind])}")
 
     mfr = [r["name"] for r in results
@@ -361,6 +361,119 @@ def cmd_serve(args):
         log("stopped")
     finally:
         server.server_close()
+    return EXIT_OK
+
+
+# ------------------------------------------------------------- discover
+def cmd_discover(args):
+    """Find devices by the documented /udi filters rather than by name.
+
+    For questions like "all class I software for psychological conditions",
+    where you do not have a list of trade names to start from.
+    """
+    client = make_client(args)
+
+    reference = None
+    risk_class_id = args.risk_class_id
+    if args.risk_class and risk_class_id is None:
+        # RISK_CLASS_ID is numeric, so a human class ("I", "IIa") has to be
+        # resolved through /reference first.
+        log("resolving the risk class via /reference")
+        reference = Reference(client, language=args.language, verbose=args.verbose).load()
+        wanted = args.risk_class.strip().lower().replace("class", "").strip()
+        matches = [(rid, label) for (table, rid), label in reference._values.items()
+                   if table == "RISK_CLASS_ID"
+                   and label.strip().lower().replace("class", "").strip() == wanted]
+        if not matches:
+            available = sorted(
+                label for (table, _), label in reference._values.items()
+                if table == "RISK_CLASS_ID")
+            log(f"no risk class matching {args.risk_class!r}.")
+            log(f"  available: {', '.join(available) or '(reference lookup returned none)'}")
+            return EXIT_USAGE
+        risk_class_id, label = matches[0]
+        log(f"  {args.risk_class!r} -> RISK_CLASS_ID={risk_class_id} ({label})")
+
+    params = {}
+    for name, value in (("RISK_CLASS_ID", risk_class_id),
+                        ("NOMENCLATURE_CODE", args.nomenclature),
+                        ("MEDICAL_PURPOSE", args.medical_purpose),
+                        ("DEVICE_NAME", args.device_name),
+                        ("TRADE_NAME", args.trade_name),
+                        ("MF_SRN", args.mf_srn),
+                        ("APPLICABLE_LEGISLATION_ID", args.legislation_id)):
+        if value not in (None, ""):
+            params[name] = value
+    if not params:
+        log("give at least one filter, e.g. --risk-class I --medical-purpose depression")
+        return EXIT_USAGE
+
+    if args.dry_run:
+        print(client.build_url("/udi", params))
+        return EXIT_OK
+
+    log(f"querying /udi with {params}")
+    try:
+        rows, body = client.request("/udi", params)
+    except AuthError as exc:
+        log(str(exc))
+        return EXIT_AUTH
+    except (ApiError, ValueError) as exc:
+        log(str(exc))
+        return EXIT_ERROR
+
+    log(f"  {len(rows)} row(s), {len(body)} bytes")
+    if len(rows) == 1000:
+        log("  WARNING: exactly 1000 rows - this is the server cap, so the result is")
+        log("           TRUNCATED. Narrow the filters; do not treat this as complete.")
+
+    if reference is None and args.resolve_codes:
+        reference = Reference(client, language=args.language, verbose=args.verbose).load()
+
+    # Optional local keyword narrowing, for concepts the API cannot filter on.
+    terms = [t.strip().lower() for t in (args.keyword or "").split(",") if t.strip()]
+    kept, devices = [], []
+    for row in rows:
+        device = Device(row)
+        if reference is not None:
+            reference.enrich(device)
+        devices.append(device)
+        if terms:
+            haystack = " ".join(str(v) for v in device.to_dict().values()).lower()
+            if not any(t in haystack for t in terms):
+                continue
+        kept.append(device)
+    if terms:
+        log(f"  {len(kept)} of {len(devices)} row(s) mention {terms}")
+
+    # Present each hit as its own single-candidate result, so the existing
+    # writers produce the same report shape as a name search.
+    results = []
+    for device in kept[:args.top]:
+        entry = device.to_dict()
+        entry["score"] = 1.0
+        entry["matched_on"] = "filter:" + ",".join(sorted(params))
+        if args.keep_raw:
+            entry["raw"] = device.raw
+        results.append({
+            "name": device.trade_name or device.device_name or device.primary_di or "(unnamed)",
+            "description": device.medical_purpose, "ca": "", "country": device.country,
+            "status": "found", "candidates": [entry],
+            "queries": [{"param": k, "term": v, "rows": len(rows), "error": None}
+                        for k, v in params.items()],
+            "errors": [], "response_fields": sorted(device.raw), "total_matches": len(rows),
+        })
+
+    meta = {"base": client.base, "fields": ", ".join(f"{k}={v}" for k, v in params.items()),
+            "format": args.fmt, "requests": client.request_count,
+            "api_version": args.api_version,
+            "truncated": len(rows) == 1000,
+            "tool_version": __import__("eudamed").__version__}
+    paths = write_all(results, args.out, meta)
+    log("")
+    log(f"{len(results)} device(s) written")
+    for kind in ("json", "csv", "md", "html"):
+        log(f"  {kind:4} {os.path.abspath(paths[kind])}")
     return EXIT_OK
 
 
@@ -593,6 +706,27 @@ def build_parser():
     raw.add_argument("--rows", type=int, default=3, help="sample rows to print")
     add_common(raw)
     raw.set_defaults(func=cmd_raw)
+
+    dis = subs.add_parser(
+        "discover", help="find devices by filter (risk class, EMDN, purpose) not by name")
+    dis.add_argument("--risk-class", help="e.g. I, IIa, IIb, III - resolved via /reference")
+    dis.add_argument("--risk-class-id", type=int, help="numeric RISK_CLASS_ID directly")
+    dis.add_argument("--nomenclature", help="EMDN / NOMENCLATURE_CODE, e.g. Z12")
+    dis.add_argument("--medical-purpose", help="MEDICAL_PURPOSE filter")
+    dis.add_argument("--device-name", help="DEVICE_NAME filter")
+    dis.add_argument("--trade-name", help="TRADE_NAME filter")
+    dis.add_argument("--mf-srn", help="MF_SRN filter")
+    dis.add_argument("--legislation-id", type=int, help="APPLICABLE_LEGISLATION_ID")
+    dis.add_argument("--keyword", help="comma-separated words to require in the returned "
+                                       "rows, applied locally for concepts the API "
+                                       "cannot filter on")
+    dis.add_argument("--out", default="eudamed_discover", help="output directory")
+    dis.add_argument("--top", type=int, default=200, help="maximum devices to report")
+    dis.add_argument("--no-resolve-codes", dest="resolve_codes", action="store_false")
+    dis.add_argument("--language", default="en")
+    dis.add_argument("--keep-raw", action="store_true")
+    add_common(dis)
+    dis.set_defaults(func=cmd_discover)
 
     return parser
 

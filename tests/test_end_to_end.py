@@ -534,3 +534,54 @@ def test_raw_writes_the_body_to_a_file(live_server, tmp_path):
     assert main(["raw", "/udi", "--base", live_server, "--out", str(out),
                  "--delay", "0", "--retries", "1"]) == EXIT_OK
     assert "MindDoc" in out.read_text(encoding="utf-8")
+
+
+# --- discover -----------------------------------------------------------
+def test_discover_by_filter_writes_a_report(live_server, tmp_path):
+    out = tmp_path / "d"
+    assert main(["discover", "--base", live_server, "--risk-class-id", "1",
+                 "--out", str(out), "--delay", "0", "--retries", "1"]) == EXIT_OK
+    payload = json.loads((out / "results.json").read_text())
+    assert payload["results"]
+    assert all(r["candidates"][0]["matched_on"].startswith("filter:")
+               for r in payload["results"])
+    assert (out / "report.md").read_text(encoding="utf-8").startswith("# EUDAMED")
+
+
+def test_discover_resolves_a_human_risk_class(live_server, tmp_path, capsys):
+    """RISK_CLASS_ID is numeric, so "I" has to be looked up via /reference."""
+    assert main(["discover", "--base", live_server, "--risk-class", "Class I",
+                 "--out", str(tmp_path / "d"), "--delay", "0", "--retries", "1"]) == EXIT_OK
+    assert "RISK_CLASS_ID=1" in capsys.readouterr().err
+
+
+def test_discover_rejects_an_unknown_risk_class(live_server, tmp_path, capsys):
+    code = main(["discover", "--base", live_server, "--risk-class", "Class ZZZ",
+                 "--out", str(tmp_path / "d"), "--delay", "0", "--retries", "1"])
+    assert code == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "no risk class matching" in err and "available:" in err
+
+
+def test_discover_keyword_narrows_locally(live_server, tmp_path, capsys):
+    """Some concepts cannot be filtered server-side, so keywords are applied
+    to the returned rows instead."""
+    assert main(["discover", "--base", live_server, "--risk-class-id", "1",
+                 "--keyword", "tinnitus", "--out", str(tmp_path / "d"),
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "mention ['tinnitus']" in err
+    results = json.loads((tmp_path / "d" / "results.json").read_text())["results"]
+    assert [r["name"] for r in results] == ["Kalmeda"]
+
+
+def test_discover_needs_at_least_one_filter(capsys):
+    assert main(["discover", "--out", "x"]) == EXIT_USAGE
+    assert "give at least one filter" in capsys.readouterr().err
+
+
+def test_discover_dry_run(capsys):
+    assert main(["discover", "--risk-class-id", "1", "--medical-purpose", "depression",
+                 "--dry-run"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "RISK_CLASS_ID=1" in out and "MEDICAL_PURPOSE=depression" in out
