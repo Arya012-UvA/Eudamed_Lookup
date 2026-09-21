@@ -35,15 +35,27 @@ class Device:
         self.legislation = str(pick(i, "APPLICABLE_LEGISLATION", "applicableLegislation"))
         self.legislation_id = pick(i, "APPLICABLE_LEGISLATION_ID",
                                    "applicableLegislationId", default=None)
-        self.market_status = str(pick(i, "PLACED_ON_THE_MARKET", "placedOnTheMarket"))
-        self.market_status_id = pick(i, "PLACED_ON_THE_MARKET_ID",
-                                     "placedOnTheMarketId", default=None)
+        # PLACED_ON_THE_MARKET_ID resolves to a COUNTRY ("Israel") in the live
+        # /reference table, not a status. The device's market status is the
+        # separate DEVICE_STATUS_TYPE_ID column.
+        self.placed_on_market = str(pick(i, "PLACED_ON_THE_MARKET", "placedOnTheMarket"))
+        self.placed_on_market_id = pick(i, "PLACED_ON_THE_MARKET_ID",
+                                        "placedOnTheMarketId", default=None)
+        self.device_status = str(pick(i, "DEVICE_STATUS_TYPE", "deviceStatusType"))
+        self.device_status_id = pick(i, "DEVICE_STATUS_TYPE_ID", "deviceStatusTypeId",
+                                     "STATUS_ID", default=None)
         self.special_type = str(pick(i, "SPECIAL_DEVICE_TYPE", "specialDeviceType"))
         self.special_type_id = pick(i, "SPECIAL_DEVICE_TYPE_ID",
                                     "specialDeviceTypeId", default=None)
         self.uuid = str(pick(i, "UUID", "uuid", "id", "udiDiDataUuid"))
         self.latest_version = pick(i, "LATEST_VERSION", "latestVersion", default=None)
         self.version = pick(i, "VERSION_NUMBER", "versionNumber", "VERSION", default=None)
+        # Further real columns, from the live field list.
+        self.secondary_di = str(pick(i, "SECONDARY_DI", "secondaryDi"))
+        self.authorised_rep = str(pick(i, "AR_NAME", "arName"))
+        self.authorised_rep_srn = str(pick(i, "AR_SRN", "arSrn"))
+        self.active = pick(i, "ACTIVE", "active", default=None)
+        self.implantable = pick(i, "IMPLANTABLE", "implantable", default=None)
 
     @property
     def country(self):
@@ -68,7 +80,10 @@ class Device:
             "primary_di": self.primary_di, "basic_udi": self.basic_udi,
             "reference": self.reference, "nomenclature_code": self.nomenclature_code,
             "risk_class": self.risk_class, "legislation": self.legislation,
-            "market_status": self.market_status, "special_type": self.special_type,
+            "placed_on_market": self.placed_on_market, "device_status": self.device_status,
+            "special_type": self.special_type, "secondary_di": self.secondary_di,
+            "authorised_rep": self.authorised_rep, "authorised_rep_srn": self.authorised_rep_srn,
+            "active": self.active,
             "medical_purpose": self.medical_purpose, "version": self.version,
             "latest_version": self.latest_version, "uuid": self.uuid, "link": self.link,
         }

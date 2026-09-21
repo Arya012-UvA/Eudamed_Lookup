@@ -166,14 +166,16 @@ def test_unreadable_input_is_a_usage_error(tmp_path, capsys):
     assert main(["search", "--input", str(tmp_path / "nope.csv")]) == EXIT_USAGE
 
 
-def test_reference_labels_resolve_all_four_coded_fields(live_server, tmp_path):
+def test_reference_labels_resolve_every_coded_field(live_server, tmp_path):
     out = tmp_path / "res"
     main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
           "--out", str(out), "--delay", "0"])
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
     assert best["risk_class"] == "Class IIa"
     assert best["legislation"] == "Regulation (EU) 2017/745"
-    assert best["market_status"] == "Germany"
+    # PLACED_ON_THE_MARKET_ID is a country; DEVICE_STATUS_TYPE_ID is the status.
+    assert best["placed_on_market"] == "Germany"
+    assert best["device_status"] == "On the market"
     assert best["special_type"] == "None"
 
 
@@ -455,3 +457,80 @@ def test_reference_tables_summary(live_server, capsys):
     out = capsys.readouterr().out
     assert "RISK_CLASS_ID" in out and "Class IIa" in out
     assert "PLACED_ON_THE_MARKET_ID" in out and "Israel" in out
+
+
+# --- filter semantics probing -------------------------------------------
+def test_filtertest_calibrates_against_a_real_trade_name(live_server, capsys):
+    """The control is a trade name taken from the API's own response, so there
+    is always one trial that must match. Without it, a zero-row result cannot
+    be told apart from a broken filter."""
+    assert main(["filtertest", "--base", live_server, "--term", "MindDoc",
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["control"] == "MindDoc"
+    labels = [t["strategy"] for t in report["trials"]]
+    assert labels[0] == "CONTROL: exact real trade name"
+    assert report["trials"][0]["rows"] == 1
+    assert "The filter works" in captured.err
+
+
+def test_filtertest_tries_odata_options(live_server, capsys):
+    """The response envelope is {"value": [...]}, so OData options are worth
+    trying even though the spec documents none."""
+    main(["filtertest", "--base", live_server, "--term", "MindDoc",
+          "--delay", "0", "--retries", "1"])
+    report = json.loads(capsys.readouterr().out)
+    odata = [t for t in report["trials"] if t["strategy"].startswith("OData")]
+    assert len(odata) >= 4
+    # The stand-in rejects them, which is itself a recorded outcome.
+    assert all("error" in t for t in odata)
+
+
+def test_filtertest_dry_run_lists_every_strategy(capsys):
+    assert main(["filtertest", "--term", "MindDoc", "--dry-run"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "TRADE_NAME=MindDoc" in out
+    assert "%24filter" in out and "%24top" in out     # $filter, $top
+    assert out.count("\n") >= 13
+
+
+def test_filtertest_reports_a_broken_filter_distinctly(live_server, capsys, monkeypatch):
+    """If even the control matches nothing, the mechanism is at fault - not
+    the search term. That must read differently."""
+    from eudamed.client import Client
+
+    real_request = Client.request
+
+    def only_unfiltered(self, path, params=None, allow_undocumented=False):
+        if params:
+            return [], "[]"
+        return real_request(self, path, params, allow_undocumented=allow_undocumented)
+
+    monkeypatch.setattr(Client, "request", only_unfiltered)
+    main(["filtertest", "--base", live_server, "--term", "MindDoc",
+          "--delay", "0", "--retries", "1"])
+    err = capsys.readouterr().err
+    assert "the problem is the filter mechanism" in err
+
+
+# --- raw ----------------------------------------------------------------
+def test_raw_allows_undocumented_parameters(live_server, capsys):
+    """raw must bypass the spec allowlist; that is the point of it."""
+    assert main(["raw", "/udi", "--base", live_server, "--param", "TRADE_NAME=MindDoc",
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "MindDoc" in out
+
+
+def test_raw_dry_run_and_bad_param(capsys):
+    assert main(["raw", "/udi", "--param", "$top=5", "--dry-run"]) == EXIT_OK
+    assert "%24top=5" in capsys.readouterr().out
+    assert main(["raw", "/udi", "--param", "nonsense"]) == EXIT_USAGE
+
+
+def test_raw_writes_the_body_to_a_file(live_server, tmp_path):
+    out = tmp_path / "udi.json"
+    assert main(["raw", "/udi", "--base", live_server, "--out", str(out),
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    assert "MindDoc" in out.read_text(encoding="utf-8")

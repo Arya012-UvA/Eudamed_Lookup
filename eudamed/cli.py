@@ -364,6 +364,150 @@ def cmd_serve(args):
     return EXIT_OK
 
 
+# ------------------------------------------------------------------ raw
+def cmd_raw(args):
+    """GET any operation with arbitrary parameters, bypassing the allowlist."""
+    client = make_client(args)
+    params = {}
+    for item in args.param:
+        if "=" not in item:
+            log(f"--param must be K=V, got {item!r}")
+            return EXIT_USAGE
+        key, value = item.split("=", 1)
+        params[key] = value
+    path = args.path if args.path.startswith("/") else "/" + args.path
+
+    if args.dry_run:
+        print(client.build_url(path, params, allow_undocumented=True))
+        return EXIT_OK
+    try:
+        rows, body = client.request(path, params, allow_undocumented=True)
+    except AuthError as exc:
+        log(str(exc))
+        return EXIT_AUTH
+    except (ApiError, ValueError) as exc:
+        log(str(exc))
+        return EXIT_ERROR
+
+    log(f"{len(rows)} row(s), {len(body)} bytes")
+    if len(rows) == 1000:
+        log("  note: exactly 1000 rows - likely a server-side cap, so this is truncated")
+    if rows:
+        log(f"fields: {', '.join(describe_keys(rows))}")
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        log(f"body -> {os.path.abspath(args.out)}")
+    else:
+        print(json.dumps(rows[:args.rows] if rows else body[:2000], indent=2, default=str))
+    return EXIT_OK
+
+
+# ------------------------------------------------------------ filtertest
+# Strategies tried against /udi for one term, in order. Each is (label, params).
+def filter_strategies(term, param="TRADE_NAME"):
+    return [
+        ("exact as typed", {param: term}),
+        ("lowercase", {param: term.lower()}),
+        ("UPPERCASE", {param: term.upper()}),
+        ("first word only", {param: term.split()[0] if term.split() else term}),
+        ("first 4 characters", {param: term[:4]}),
+        ("trailing * wildcard", {param: term + "*"}),
+        ("surrounding * wildcards", {param: f"*{term}*"}),
+        ("SQL-style % wildcards", {param: f"%{term}%"}),
+        # The response envelope is {"value": [...]}, i.e. OData, so these are
+        # worth trying even though the spec documents none of them.
+        ("OData $filter contains()", {"$filter": f"contains({param},'{term}')"}),
+        ("OData $filter eq", {"$filter": f"{param} eq '{term}'"}),
+        ("OData $top=5", {"$top": "5"}),
+        ("OData $count=true", {"$count": "true"}),
+        ("OData $skip=1000 + $top=5", {"$skip": "1000", "$top": "5"}),
+    ]
+
+
+def cmd_filtertest(args):
+    """Work out how /udi filtering actually behaves.
+
+    The spec documents the filter parameters but not their semantics, and a
+    plain TRADE_NAME query can return nothing while the endpoint holds data.
+    This tries a battery of forms and, crucially, calibrates against a trade
+    name taken from the API's own unfiltered response - so there is a control
+    that must match.
+    """
+    client = make_client(args)
+    if args.dry_run:
+        for label, params in filter_strategies(args.term, args.field):
+            print(f"{label}: {client.build_url('/udi', params, allow_undocumented=True)}")
+        return EXIT_OK
+
+    # Control: a real value from the dataset. If even this does not match, the
+    # problem is the filter mechanism, not the term.
+    control = None
+    log("fetching an unfiltered sample to calibrate against")
+    try:
+        rows, body = client.request("/udi", {})
+        log(f"  unfiltered: {len(rows)} row(s), {len(body)} bytes")
+        if len(rows) == 1000:
+            log("  note: exactly 1000 rows - almost certainly a server-side cap, "
+                "so this sample is truncated")
+        for row in rows:
+            name = Device(row).trade_name
+            if name:
+                control = name
+                break
+        if control:
+            log(f"  control trade name from the API: {control!r}")
+    except AuthError as exc:
+        log(str(exc))
+        return EXIT_AUTH
+    except (ApiError, ValueError) as exc:
+        log(f"  unfiltered fetch failed: {exc}")
+        return EXIT_ERROR
+
+    results = []
+    trials = filter_strategies(args.term, args.field)
+    if control:
+        trials.insert(0, ("CONTROL: exact real trade name", {args.field: control}))
+
+    for label, params in trials:
+        try:
+            rows, body = client.request("/udi", params, allow_undocumented=True)
+            names = [Device(r).trade_name for r in rows[:3]]
+            results.append({"strategy": label, "params": params, "rows": len(rows),
+                            "bytes": len(body), "sample_names": names})
+            log(f"  {label:32} -> {len(rows):5} row(s)  {names}")
+        except (ApiError, ValueError) as exc:
+            results.append({"strategy": label, "params": params, "error": str(exc)})
+            log(f"  {label:32} -> error: {str(exc)[:110]}")
+
+    print(json.dumps({"term": args.term, "field": args.field,
+                      "control": control, "trials": results}, indent=2, default=str))
+
+    # Read the outcome back to the user.
+    by_label = {r["strategy"]: r for r in results}
+    ctrl = by_label.get("CONTROL: exact real trade name")
+    log("")
+    if ctrl and ctrl.get("rows"):
+        log("The filter works: an exact trade name from the dataset matched.")
+        hits = [r["strategy"] for r in results
+                if r.get("rows") and not r["strategy"].startswith("CONTROL")]
+        if hits:
+            log(f"Forms that also returned rows: {', '.join(hits)}")
+        else:
+            log(f"No form of {args.term!r} matched, so it is probably not registered "
+                "under that trade name. Try --field DEVICE_NAME, or search the "
+                "manufacturer with the actors command.")
+    elif ctrl:
+        log("Even an exact trade name taken from the API matched nothing, so the "
+            "problem is the filter mechanism rather than your search term.")
+    odata = [r["strategy"] for r in results
+             if r["strategy"].startswith("OData") and r.get("rows")]
+    if odata:
+        log(f"OData options appear to work: {', '.join(odata)} - that gives "
+            "pagination and substring search beyond what the spec documents.")
+    return EXIT_OK
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="eudamed",
@@ -431,6 +575,24 @@ def build_parser():
                     help="do not open a browser automatically")
     add_common(ui)
     ui.set_defaults(func=cmd_serve)
+
+    ft = subs.add_parser(
+        "filtertest", help="work out how /udi filtering behaves (exact? wildcards? OData?)")
+    ft.add_argument("--term", default="MindDoc", help="the term to try")
+    ft.add_argument("--field", default="TRADE_NAME",
+                    help="the /udi parameter to filter on (default TRADE_NAME)")
+    add_common(ft)
+    ft.set_defaults(func=cmd_filtertest)
+
+    raw = subs.add_parser(
+        "raw", help="GET an operation with arbitrary query parameters")
+    raw.add_argument("path", help="operation path, e.g. /udi")
+    raw.add_argument("--param", action="append", default=[], metavar="K=V",
+                     help="a query parameter; repeatable. Not restricted to the spec")
+    raw.add_argument("--out", help="write the raw response body to this file")
+    raw.add_argument("--rows", type=int, default=3, help="sample rows to print")
+    add_common(raw)
+    raw.set_defaults(func=cmd_raw)
 
     return parser
 

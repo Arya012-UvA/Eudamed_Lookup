@@ -180,7 +180,8 @@ def _is_local(base):
     return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
 
-CODED_FIELDS = ("risk_class", "legislation", "market_status", "special_type")
+CODED_FIELDS = ("risk_class", "legislation", "device_status", "placed_on_market",
+                "special_type")
 
 
 def _has_unresolved_codes(result):
@@ -350,8 +351,10 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
 const $ = id => document.getElementById(id);
 const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Model","device_model"],
 ["Manufacturer","manufacturer_name"],["Manufacturer SRN","mf_srn"],["Country","manufacturer_country"],
-["Risk class","risk_class"],["Legislation","legislation"],["Market status","market_status"],
-["Special type","special_type"],["UDI-DI","primary_di"],["Basic UDI-DI","basic_udi"],
+["Risk class","risk_class"],["Legislation","legislation"],["Device status","device_status"],
+["Placed on market","placed_on_market"],
+["Special type","special_type"],["UDI-DI","primary_di"],["Secondary DI","secondary_di"],
+["Basic UDI-DI","basic_udi"],["Authorised rep.","authorised_rep"],
 ["EMDN / nomenclature","nomenclature_code"],["Medical purpose","medical_purpose"],
 ["Reference","reference"],["Version","version"]];
 let TH = {found:0.85, possible:0.6};

@@ -9,7 +9,7 @@ import time
 CSV_FIELDS = [
     "name", "ca", "expected_country", "status", "score", "matched_on",
     "trade_name", "device_name", "manufacturer_name", "mf_srn", "manufacturer_country",
-    "risk_class", "legislation", "market_status", "special_type",
+    "risk_class", "legislation", "device_status", "placed_on_market", "special_type",
     "primary_di", "basic_udi", "nomenclature_code", "medical_purpose",
     "candidates", "total_matches", "errors", "link",
 ]
@@ -147,7 +147,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 </div>
 <div class="wrap"><table>
 <thead><tr><th>Device</th><th>Status</th><th>Best match</th><th>Evidence</th>
-<th>Manufacturer</th><th>Class</th><th>Market</th></tr></thead>
+<th>Manufacturer</th><th>Class</th><th>Status</th></tr></thead>
 <tbody id="rows"></tbody>
 </table></div>
 </main>
@@ -174,7 +174,8 @@ document.getElementById("note").innerHTML =
   + (mfrOnly ? ` ${mfrOnly} device(s) have manufacturer-only leads, shown with a <span class="chip mfr">manufacturer</span> chip: the manufacturer name matched but the trade name did not, so these are never counted as found.` : "");
 const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Model","device_model"],
 ["Manufacturer","manufacturer_name"],["Manufacturer SRN","mf_srn"],["Manufacturer country","manufacturer_country"],
-["Risk class","risk_class"],["Legislation","legislation"],["Market status","market_status"],
+["Risk class","risk_class"],["Legislation","legislation"],["Device status","device_status"],
+["Placed on market","placed_on_market"],
 ["Special type","special_type"],["UDI-DI","primary_di"],["Basic UDI-DI","basic_udi"],
 ["EMDN / nomenclature","nomenclature_code"],["Medical purpose","medical_purpose"],
 ["Reference","reference"],["Version","version"],["Score","score"],["Evidence","matched_on"]];
@@ -212,7 +213,7 @@ function render(){
       + `<td>${esc(d.name)}</td><td class="st ${cls(d.status)}">${esc(d.status)}</td>`
       + `<td>${esc(b.trade_name || "")}</td><td>${b.trade_name ? chip(b) : ""}</td>`
       + `<td>${esc(b.manufacturer_name || "")}<div class="muted">${esc(b.mf_srn || "")}</div></td>`
-      + `<td>${esc(b.risk_class || "")}</td><td>${esc(b.market_status || "")}</td></tr>`;
+      + `<td>${esc(b.risk_class || "")}</td><td>${esc(b.device_status || "")}</td></tr>`;
     return openRows.has(i) ? row + `<tr class="more"><td colspan="7">${detail(d)}</td></tr>` : row;
   }).join("");
   document.getElementById("rows").innerHTML = html

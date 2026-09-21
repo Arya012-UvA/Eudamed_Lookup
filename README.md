@@ -134,6 +134,32 @@ Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated
 an identifier match rather than a name comparison, so pasting an SRN lists
 every device that manufacturer has registered.
 
+### `filtertest` — how does `/udi` filtering actually behave?
+
+The spec documents the filter parameters but not their semantics, and a plain
+`TRADE_NAME` query can return zero rows while the endpoint holds data. This
+tries a battery of forms — exact, case variants, prefixes, `*` and `%`
+wildcards, and OData options — and calibrates against a trade name taken from
+the API's **own** unfiltered response, so one trial must always match:
+
+```bash
+python3 -m eudamed filtertest --term MindDoc
+```
+
+If the control matches and your term does not, the device is probably not
+registered under that trade name. If even the control fails, the filter
+mechanism is at fault, not your term. The two read differently on purpose.
+
+### `raw` — arbitrary parameters
+
+```bash
+python3 -m eudamed raw /udi --param '$top=5' --param '$count=true'
+python3 -m eudamed raw /udi --out udi.json
+```
+
+Unlike the other commands this does **not** restrict parameters to the spec,
+which is how the OData options above get tested.
+
 ### `search` — the main command
 
 ```bash
@@ -274,7 +300,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 182 tests
+pytest -q          # 189 tests
 ruff check eudamed tests
 ```
 
@@ -356,13 +382,29 @@ python3 -m eudamed search --input devices.example.csv --out results -v
 
 These are properties of the published spec, not of this tool:
 
-1. **No response schemas.** Every `200` is `{"description": ""}`, so response
-   field names are unverified. Handled by matching field names on a normalised
-   key (`TRADE_NAME` ≡ `tradeName` ≡ `trade_name`) and by `probe`.
-2. **No pagination, anywhere.** No `page`, `pageSize`, `limit` or `offset` on any
-   operation. How the API caps large result sets is unknown; a broad search may
-   be silently truncated. `results.json` records the row count per query so a
-   suspicious round number is visible.
+1. **No response schemas.** Every `200` is `{"description": ""}`. The real
+   `/udi` row has **61 columns**, confirmed by probing the live API — far more
+   than the 13 filterable parameters suggest, including `DEVICE_STATUS_TYPE_ID`,
+   `AR_NAME`/`AR_SRN`, `SECONDARY_DI`, `UUID` and a long tail of booleans
+   (`IMPLANTABLE`, `STERILE`, `REUSABLE`, …). Run `probe` to print them.
+
+   One correction this surfaced: `PLACED_ON_THE_MARKET_ID` resolves to a
+   **country** (`Israel`), not a status — the device's market status is the
+   separate `DEVICE_STATUS_TYPE_ID` column. They are reported as
+   `placed_on_market` and `device_status` respectively.
+2. **No pagination, and a 1000-row cap.** No `page`, `pageSize`, `limit` or
+   `offset` on any operation. An unfiltered `/udi` request returns **exactly
+   1000 rows** (2.5 MB), which for a register of this size is a server-side cap,
+   so an unfiltered dump is truncated with nothing in the response saying so.
+   Every command warns when a response comes back at exactly 1000 rows.
+
+   The response envelope is `{"value": [...]}` — the OData shape — so `$top`,
+   `$skip`, `$count` and `$filter` may work despite being undocumented. Find
+   out with `filtertest`, or try one directly:
+
+   ```bash
+   python3 -m eudamed raw /udi --param '$skip=1000' --param '$top=5'
+   ```
 3. **`/reference` returns four columns, not three.** The spec lists `ID`, `CODE`
    and `LANGUAGE` as *query* parameters, which suggested a flat `ID → CODE` map
    with no way to tell code tables apart. The real response has a fourth column
@@ -403,10 +445,11 @@ eudamed/
   matching.py     normalisation and typed-evidence scoring
   search.py       orchestration: targets -> ranked candidates
   report.py       JSON / CSV / HTML writers
-  cli.py          argparse CLI: search, actors, reference, probe, serve
+  cli.py          argparse CLI: search, actors, reference, probe, serve,
+                  filtertest, raw
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            182 tests, no network required
+tests/            189 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

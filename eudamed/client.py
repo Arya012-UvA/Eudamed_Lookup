@@ -54,9 +54,15 @@ class Client:
         self.request_count = 0
 
     # -- URL construction -------------------------------------------------
-    def build_url(self, path, params=None):
-        """Full request URL, including the required format and api-version."""
-        allowed = config.OPERATIONS.get(path)
+    def build_url(self, path, params=None, allow_undocumented=False):
+        """Full request URL, including the required format and api-version.
+
+        allow_undocumented lifts the parameter allowlist, which the filter and
+        raw probes need in order to try things the spec does not mention (the
+        response envelope is {"value": [...]}, i.e. OData, so $top/$skip/
+        $filter/$count are worth testing).
+        """
+        allowed = None if allow_undocumented else config.OPERATIONS.get(path)
         query = {}
         for name, value in (params or {}).items():
             if value is None or value == "":
@@ -97,14 +103,14 @@ class Client:
         if wait > 0:
             time.sleep(wait)
 
-    def request(self, path, params=None):
+    def request(self, path, params=None, allow_undocumented=False):
         """GET an operation and return (rows, raw_body_text).
 
         Raises AuthError on 401/403, ApiError on anything else that does not
         succeed within --retries attempts. The original exception is always
         attached as .cause and named in the message.
         """
-        url = self.build_url(path, params)
+        url = self.build_url(path, params, allow_undocumented=allow_undocumented)
         safe_url = self._redact(url)
         last = None
         for attempt in range(self.retries):

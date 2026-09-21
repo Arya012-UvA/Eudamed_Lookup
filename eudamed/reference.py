@@ -24,7 +24,10 @@ from .fields import index_row, pick
 CODE_TABLES = {
     "risk_class_id": "RISK_CLASS_ID",
     "legislation_id": "APPLICABLE_LEGISLATION_ID",
-    "market_status_id": "PLACED_ON_THE_MARKET_ID",
+    # PLACED_ON_THE_MARKET_ID is the country a device is placed on the market
+    # in ("Israel"), not its status; DEVICE_STATUS_TYPE_ID is the status.
+    "placed_on_market_id": "PLACED_ON_THE_MARKET_ID",
+    "device_status_id": "DEVICE_STATUS_TYPE_ID",
     "special_type_id": "SPECIAL_DEVICE_TYPE_ID",
 }
 
@@ -32,7 +35,8 @@ CODE_TABLES = {
 LABEL_FOR = {
     "risk_class": "risk_class_id",
     "legislation": "legislation_id",
-    "market_status": "market_status_id",
+    "placed_on_market": "placed_on_market_id",
+    "device_status": "device_status_id",
     "special_type": "special_type_id",
 }
 
