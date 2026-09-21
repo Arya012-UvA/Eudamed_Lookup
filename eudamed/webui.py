@@ -27,10 +27,14 @@ from .search import Target, search_target
 class UIServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, handler, client, verbose=False):
+    def __init__(self, address, handler, client, verbose=False, targets=None):
         super().__init__(address, handler)
         self.client = client
         self.verbose = verbose
+        # Optional device list loaded from a CSV, exposed to the page so a name
+        # can be picked instead of typed, and the whole list run in one go.
+        self.targets = list(targets or ())
+        self.targets_by_name = {t.name.lower(): t for t in self.targets}
         self._ref = None
         self._ref_lock = threading.Lock()
 
@@ -79,13 +83,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             elif parsed.path == "/api/health":
+                base = self.server.client.base
                 self._json(200, {
-                    "base": self.server.client.base,
+                    "base": base,
                     "has_key": bool(self.server.client.key),
                     "format": self.server.client.fmt,
                     "thresholds": {"found": FOUND, "possible": POSSIBLE},
                     "udi_params": list(config.UDI_PARAMS),
+                    # A local base means the bundled stand-in, not real EUDAMED.
+                    "is_local": _is_local(base),
+                    "device_count": len(self.server.targets),
                 })
+            elif parsed.path == "/api/devices":
+                self._json(200, {"devices": [t.to_dict() for t in self.server.targets]})
             elif parsed.path == "/api/search":
                 self._search(query)
             elif parsed.path == "/api/actors":
@@ -101,7 +111,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": "internal error", "detail": traceback.format_exc(limit=3)})
 
     def _search(self, query):
-        name = (query.get("name") or "").strip()
+        # ?target=<name> uses that device's full definition from the loaded CSV
+        # (all spelling variants, broad terms and expected country) rather than
+        # treating the typed text as the only search key.
+        wanted = (query.get("target") or "").strip()
+        preset = self.server.targets_by_name.get(wanted.lower()) if wanted else None
+        if wanted and preset is None:
+            self._json(404, {"error": f"{wanted!r} is not in the loaded device list"})
+            return
+
+        name = (query.get("name") or "").strip() or (preset.name if preset else "")
         if not name:
             self._json(400, {"error": "give a name to search for"})
             return
@@ -114,8 +133,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": f"not documented /udi parameter(s): {named}"})
             return
 
-        target = Target(name=name, country=(query.get("country") or "").strip(),
-                        keys=[name])
+        if preset is not None:
+            target = Target(name=preset.name, description=preset.description,
+                            ca=preset.ca,
+                            country=(query.get("country") or preset.country).strip(),
+                            keys=preset.keys, broad=preset.broad)
+        else:
+            target = Target(name=name, country=(query.get("country") or "").strip(),
+                            keys=[name])
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
         try:
             result = search_target(self.server.client, target, reference=reference,
@@ -151,6 +176,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"actors": [Actor(r).to_dict() for r in rows]})
 
 
+def _is_local(base):
+    host = urllib.parse.urlparse(base).hostname or ""
+    return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+
+
 CODED_FIELDS = ("risk_class", "legislation", "market_status", "special_type")
 
 
@@ -168,8 +198,8 @@ def _has_unresolved_codes(result):
     return False
 
 
-def serve(client, port=8100, host="127.0.0.1", verbose=False):
-    return UIServer((host, port), Handler, client, verbose=verbose)
+def serve(client, port=8100, host="127.0.0.1", verbose=False, targets=None):
+    return UIServer((host, port), Handler, client, verbose=verbose, targets=targets)
 
 
 FAVICON = (
@@ -231,6 +261,26 @@ dt{color:var(--muted)}dd{margin:0;word-break:break-word}
 a{color:var(--link)}
 .meta{color:var(--muted);font-size:12px;margin-top:14px}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.demo{background:#fff4e5;border-left:3px solid var(--possible);color:#7a4a00;
+padding:10px 14px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .demo{background:#2a2113;color:#e3b872}}
+.mylist{margin:0 0 20px}
+.mylist h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
+margin:0 0 9px;font-weight:600}
+.names{display:flex;flex-wrap:wrap;gap:6px}
+.name-btn{background:var(--chip);color:var(--ink);border:1px solid var(--line);border-radius:14px;
+padding:4px 11px;font-size:13px;cursor:pointer;font-weight:400}
+.name-btn:hover{border-color:var(--accent);color:var(--accent)}
+.name-btn.active{background:var(--accent);color:#fff;border-color:transparent}
+.batchbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px}
+.bar{flex:1;min-width:140px;height:6px;background:var(--chip);border-radius:3px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .2s}
+table.sum{width:100%;border-collapse:collapse;margin-top:6px;font-size:14px}
+table.sum th,table.sum td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--line)}
+table.sum th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+table.sum tr.row{cursor:pointer}
+table.sum tr.row:hover{background:var(--band)}
+.st.found{color:var(--found)}.st.possible{color:var(--possible)}.st.none{color:var(--none)}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--muted);
 border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;vertical-align:-1px}
 @keyframes s{to{transform:rotate(360deg)}}
@@ -240,10 +290,12 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
 <main>
 <h1>EUDAMED Search</h1>
 <p class="sub" id="sub">connecting&hellip;</p>
+<div id="demo"></div>
 
 <form id="f">
   <input id="name" type="search" placeholder="Device trade name, e.g. MindDoc"
-         autocomplete="off" autofocus aria-label="Device name">
+         autocomplete="off" list="names" autofocus aria-label="Device name">
+  <datalist id="names"></datalist>
   <select id="country" aria-label="Expected manufacturer country">
     <option value="">Any country</option>
     <option value="DE">DE</option><option value="NL">NL</option><option value="CZ">CZ</option>
@@ -273,6 +325,17 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
   </div>
 </details>
 
+<section class="mylist" id="mylist" hidden>
+  <h2>My list <span id="listcount" class="chip"></span></h2>
+  <div class="names" id="namebtns"></div>
+  <div class="batchbar">
+    <button id="runall" type="button">Run all</button>
+    <div class="bar"><i id="prog"></i></div>
+    <span class="sub" id="progtxt"></span>
+  </div>
+  <div id="summary"></div>
+</section>
+
 <div id="status"></div>
 <div id="out"></div>
 </main>
@@ -288,11 +351,35 @@ const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Mode
 ["Reference","reference"],["Version","version"]];
 let TH = {found:0.85, possible:0.6};
 
+let DEVICES = [];
+
 fetch("/api/health").then(r => r.json()).then(h => {
   TH = h.thresholds || TH;
   $("sub").innerHTML = `Querying <code>${esc(h.base)}</code>`
     + (h.has_key ? "" : ' &middot; <strong>no subscription key configured</strong>');
+  if (h.is_local) {
+    $("demo").className = "demo";
+    $("demo").innerHTML = `<strong>Demo mode.</strong> This is the bundled local stand-in, which
+      contains only 4 fixture devices: <code>MindDoc</code>, <code>Moodpath</code>,
+      <code>Kalmeda</code> and <code>Vitadio</code>. Any other name will correctly come back
+      <em>not found</em> &mdash; it is not in the fixture. For real answers, restart without
+      <code>--base</code> and with a real subscription key.`;
+  }
 }).catch(() => { $("sub").textContent = "cannot reach the local server"; });
+
+fetch("/api/devices").then(r => r.json()).then(d => {
+  DEVICES = d.devices || [];
+  if (!DEVICES.length) return;
+  $("mylist").hidden = false;
+  $("listcount").textContent = DEVICES.length;
+  $("names").innerHTML = DEVICES.map(x => `<option value="${esc(x.name)}">`).join("");
+  $("namebtns").innerHTML = DEVICES.map((x, i) =>
+    `<button type="button" class="name-btn" data-i="${i}" title="${esc(x.description || "")}">${esc(x.name)}</button>`).join("");
+  $("namebtns").addEventListener("click", e => {
+    const btn = e.target.closest(".name-btn");
+    if (btn) runOne(DEVICES[+btn.dataset.i].name, btn);
+  });
+}).catch(() => {});
 
 const cls = s => s >= TH.found ? "found" : s >= TH.possible ? "possible" : "none";
 const word = s => s >= TH.found ? "found" : s >= TH.possible ? "possible" : "not found";
@@ -337,10 +424,95 @@ function render(d) {
   $("out").innerHTML = html;
 }
 
+function currentOpts() {
+  const fields = [...document.querySelectorAll(".fld:checked")].map(c => c.value);
+  return { fields, top: $("top").value, min: $("min").value,
+           codes: $("codes").checked ? "1" : "0" };
+}
+
+async function query({ name, target }) {
+  const o = currentOpts();
+  const params = { fields: o.fields.join(","), top: o.top, min_score: o.min, codes: o.codes };
+  if (target) params.target = target; else params.country = $("country").value;
+  if (name) params.name = name;
+  const r = await fetch("/api/search?" + new URLSearchParams(params));
+  const d = await r.json();
+  if (!r.ok) throw Object.assign(new Error(d.detail || d.error || "request failed"), { payload: d });
+  return d;
+}
+
+/* One device from the loaded list, using its full definition. */
+async function runOne(name, btn) {
+  document.querySelectorAll(".name-btn.active").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+  $("name").value = name;
+  $("summary").innerHTML = "";
+  $("status").className = "";
+  $("status").innerHTML = `<span class="spin"></span> searching ${esc(name)}&hellip;`;
+  $("out").innerHTML = "";
+  try {
+    const d = await query({ target: name });
+    $("status").textContent = "";
+    render(d);
+  } catch (err) {
+    $("status").className = "err";
+    $("status").textContent = err.message;
+  }
+}
+
+/* The whole loaded list, one request set per device, with progress. */
+const BATCH = [];
+$("runall")?.addEventListener("click", async () => {
+  const btn = $("runall");
+  btn.disabled = true;
+  BATCH.length = 0;
+  $("out").innerHTML = "";
+  $("status").textContent = "";
+  for (let i = 0; i < DEVICES.length; i++) {
+    const dev = DEVICES[i];
+    $("progtxt").textContent = `${i + 1} / ${DEVICES.length} \u00b7 ${dev.name}`;
+    $("prog").style.width = ((i + 1) / DEVICES.length * 100) + "%";
+    try {
+      BATCH.push(await query({ target: dev.name }));
+    } catch (err) {
+      BATCH.push({ name: dev.name, status: "not found", candidates: [], queries: [],
+                   errors: [err.message], total_matches: 0 });
+    }
+    renderSummary();
+  }
+  $("progtxt").textContent = `done \u00b7 ${DEVICES.length} device(s)`;
+  btn.disabled = false;
+});
+
+function renderSummary() {
+  const tally = s => BATCH.filter(d => d.status === s).length;
+  const rows = BATCH.map((d, i) => {
+    const b = d.candidates[0] && d.status !== "not found" ? d.candidates[0] : {};
+    return `<tr class="row" data-b="${i}"><td>${esc(d.name)}</td>
+      <td class="st ${cls(b.score ?? 0)}">${esc(d.status)}</td>
+      <td>${esc(b.trade_name || "")}</td>
+      <td>${esc(b.manufacturer_name || "")}</td>
+      <td>${b.matched_on ? `<span class="chip${b.matched_on === "manufacturer" ? " mfr" : ""}">${esc(b.matched_on)}</span>` : ""}</td></tr>`;
+  }).join("");
+  $("summary").innerHTML = `<p class="sub" style="margin:14px 0 0">
+      <strong>${tally("found")}</strong> found &middot; <strong>${tally("possible")}</strong> possible
+      &middot; <strong>${tally("not found")}</strong> not found &middot; click a row for detail</p>
+    <table class="sum"><thead><tr><th>Device</th><th>Status</th><th>Best match</th>
+    <th>Manufacturer</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $("summary").querySelectorAll("tr.row").forEach(tr => tr.addEventListener("click", () => {
+    const d = BATCH[+tr.dataset.b];
+    $("name").value = d.name;
+    render(d);
+    $("out").scrollIntoView({ behavior: "smooth", block: "start" });
+  }));
+}
+
 $("f").addEventListener("submit", async e => {
   e.preventDefault();
   const name = $("name").value.trim();
   if (!name) return;
+  document.querySelectorAll(".name-btn.active").forEach(b => b.classList.remove("active"));
+  $("summary").innerHTML = "";
   const fields = [...document.querySelectorAll(".fld:checked")].map(c => c.value);
   if (!fields.length) {
     $("status").className = "err";
@@ -351,26 +523,19 @@ $("f").addEventListener("submit", async e => {
   $("status").className = "";
   $("status").innerHTML = `<span class="spin"></span> searching ${esc(name)}&hellip;`;
   $("out").innerHTML = "";
-  const url = "/api/search?" + new URLSearchParams({
-    name, country: $("country").value, fields: fields.join(","),
-    top: $("top").value, min_score: $("min").value, codes: $("codes").checked ? "1" : "0",
-  });
+  // If the typed name is in the loaded list, use its full definition.
+  const known = DEVICES.find(x => x.name.toLowerCase() === name.toLowerCase());
   try {
-    const r = await fetch(url);
-    const d = await r.json();
-    if (!r.ok) {
-      $("status").className = "err";
-      $("status").innerHTML = d.error === "auth"
-        ? `Subscription key rejected. Restart with a valid <code>--key</code>.<br>
-           <span class="sub">${esc(d.detail || "")}</span>`
-        : `${esc(d.error || "request failed")}<br><span class="sub">${esc(d.detail || "")}</span>`;
-    } else {
-      $("status").textContent = "";
-      render(d);
-    }
+    const d = await query(known ? { target: known.name } : { name });
+    $("status").textContent = "";
+    render(d);
   } catch (err) {
+    const p = err.payload || {};
     $("status").className = "err";
-    $("status").textContent = "Could not reach the local server: " + err.message;
+    $("status").innerHTML = p.error === "auth"
+      ? `Subscription key rejected. Restart with a valid <code>--key</code>.<br>
+         <span class="sub">${esc(p.detail || "")}</span>`
+      : `${esc(err.message)}`;
   } finally {
     $("go").disabled = false;
   }

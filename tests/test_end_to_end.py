@@ -253,3 +253,52 @@ def test_ui_never_exposes_the_key(ui_server):
     assert "dummy" not in ui_server.text("/")
     assert "dummy" not in json.dumps(ui_server.json("/api/health"))
     assert "dummy" not in json.dumps(ui_server.json("/api/search?name=MindDoc"))
+
+
+# --- the loaded device list in the UI ------------------------------------
+def test_ui_exposes_the_loaded_device_list(ui_server):
+    devices = ui_server.json("/api/devices")["devices"]
+    assert [d["name"] for d in devices] == [
+        "MindDoc", "HelloBetter Stress und Burnout", "Kalmeda"]
+    assert ui_server.json("/api/health")["device_count"] == 3
+
+
+def test_ui_target_uses_every_spelling_variant(ui_server):
+    """Picking a name from the list must search all its `keys` and `broad`
+    terms, not just the one string. Typing the name alone runs one query."""
+    d = ui_server.json("/api/search?target=HelloBetter+Stress+und+Burnout")
+    terms = [q["term"] for q in d["queries"]]
+    assert terms == ["HelloBetter Stress und Burnout", "HelloBetter Stress", "HelloBetter"]
+
+    typed = ui_server.json("/api/search?name=HelloBetter")
+    assert [q["term"] for q in typed["queries"]] == ["HelloBetter"]
+
+
+def test_ui_target_carries_country_and_description(ui_server):
+    d = ui_server.json("/api/search?target=MindDoc")
+    assert d["country"] == "DE" and d["description"] == "psych" and d["ca"] == "Bavaria DE"
+    assert d["status"] == "found"
+
+
+def test_ui_target_is_matched_case_insensitively(ui_server):
+    assert ui_server.json("/api/search?target=minddoc")["name"] == "MindDoc"
+
+
+def test_ui_unknown_target_is_a_404(ui_server):
+    assert ui_server.status("/api/search?target=NotInTheList") == 404
+
+
+def test_ui_flags_a_local_base_as_demo_mode(ui_server):
+    """A localhost base is the bundled stand-in, not real EUDAMED. The page
+    says so, because otherwise a correct 'not found' looks like a broken UI."""
+    assert ui_server.json("/api/health")["is_local"] is True
+
+
+@pytest.mark.parametrize("base,expected", [
+    ("http://127.0.0.1:8099/eudamed", True),
+    ("http://localhost:8099/eudamed", True),
+    ("https://api.datalake.sante.service.ec.europa.eu/eudamed", False),
+])
+def test_is_local_detection(base, expected):
+    from eudamed.webui import _is_local
+    assert _is_local(base) is expected

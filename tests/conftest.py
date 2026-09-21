@@ -116,10 +116,18 @@ def ui_server(live_server):
     ThreadingHTTPServer.shutdown() costs one poll interval, so a fresh server
     per test would add that to every one of them.
     """
+    from eudamed.search import Target
     from eudamed.webui import serve as make_ui
-
     client = Client(base=live_server, key="dummy", delay=0, backoff_base=0)
-    server = make_ui(client, port=0)
+    targets = [
+        Target("MindDoc", description="psych", ca="Bavaria DE", country="DE",
+               keys=["MindDoc"], broad=["Mind Doc"]),
+        Target("HelloBetter Stress und Burnout", country="DE",
+               keys=["HelloBetter Stress und Burnout", "HelloBetter Stress"],
+               broad=["HelloBetter"]),
+        Target("Kalmeda", country="DE", keys=["Kalmeda"]),
+    ]
+    server = make_ui(client, port=0, targets=targets)
     threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
                      daemon=True).start()
     host, port = server.server_address[:2]

@@ -271,10 +271,21 @@ def cmd_serve(args):
     if not require_key(client, args):
         return EXIT_AUTH
 
-    server = make_server(client, port=args.port, host=args.host, verbose=args.verbose)
+    targets = []
+    if args.input:
+        try:
+            targets = load_targets(args.input)
+        except (OSError, ValueError) as exc:
+            log(f"cannot read --input: {exc}")
+            return EXIT_USAGE
+
+    server = make_server(client, port=args.port, host=args.host,
+                         verbose=args.verbose, targets=targets)
     url = f"http://{args.host}:{args.port}"
     log(f"EUDAMED search UI on {url}")
     log(f"  querying {client.base}")
+    if targets:
+        log(f"  {len(targets)} device(s) loaded from {args.input}")
     log("  press Ctrl-C to stop")
     if args.open_browser:
         import webbrowser
@@ -347,6 +358,8 @@ def build_parser():
         "serve", help="open a local web UI to search any name interactively")
     ui.add_argument("--port", type=int, default=8100)
     ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--input", help="CSV of devices to offer in the UI as a "
+                                    "clickable list and a 'Run all' batch")
     ui.add_argument("--no-open", dest="open_browser", action="store_false",
                     help="do not open a browser automatically")
     add_common(ui)

@@ -82,6 +82,27 @@ change the port). Type a name, pick an expected country, press Search. Under
 **Options** you can choose which `/udi` fields to search, adjust the minimum
 score and the result count, and turn off `/reference` code resolution.
 
+**Load your own list into the UI** with `--input`:
+
+```bash
+python3 -m eudamed serve --key YOUR_KEY --input devices.csv
+```
+
+The page then shows every device as a clickable chip, autocompletes the search
+box from the list, and adds a **Run all** button that works through the whole
+list with a progress bar and a sortable summary table — click any row for full
+detail.
+
+This matters for recall. Clicking a name from the list searches **all** of that
+device's `keys` and `broad` terms, so `HelloBetter Stress und Burnout` runs
+three queries (the full name, `HelloBetter Stress`, and the broad term
+`HelloBetter`). Typing `HelloBetter` into the box by hand runs exactly one. If a
+device has spelling variants, put them in the CSV and pick it from the list.
+
+When `--base` points at localhost the page shows a **Demo mode** banner naming
+the four fixture devices, so a correct `not found` for anything else is not
+mistaken for a broken UI.
+
 Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated as
 an identifier match rather than a name comparison, so pasting an SRN lists
 every device that manufacturer has registered.
@@ -209,7 +230,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 154 tests
+pytest -q          # 163 tests
 ruff check eudamed tests
 ```
 
@@ -251,11 +272,16 @@ And the interactive UI against the same stand-in:
 
 ```bash
 # terminal 2, with the fake API still running in terminal 1
-python3 -m eudamed serve --base $BASE --key dummy
+python3 -m eudamed serve --base $BASE --key dummy --input devices.csv
 ```
 
 Try `MindDoc` (found), `velibra` (not found), and — with `MF_SRN` ticked under
 Options — `DE-MF-000025123`, which lists both of that manufacturer's devices.
+Then press **Run all** to work through all 23; expect 3 found (`MindDoc`,
+`Kalmeda`, `Vitadio` — the only ones in the fixture) and 20 not found.
+
+Remember the stand-in holds **only four devices**. Nothing else can be found
+against it, no matter how it is spelled.
 
 Checks that need no server at all:
 
@@ -319,7 +345,7 @@ eudamed/
   cli.py          argparse CLI: search, actors, reference, probe, serve
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            154 tests, no network required
+tests/            163 tests, no network required
 docs/             vendored OpenAPI document
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
