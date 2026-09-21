@@ -585,3 +585,62 @@ def test_discover_dry_run(capsys):
                  "--dry-run"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "RISK_CLASS_ID=1" in out and "MEDICAL_PURPOSE=depression" in out
+
+
+# --- report download and discovery through the UI -----------------------
+def test_ui_downloads_a_markdown_report(ui_server):
+    """The download reuses the CLI's writers, so the document cannot drift."""
+    md = ui_server.text("/api/report?target=MindDoc&format=md")
+    assert md.startswith("# EUDAMED device report")
+    assert "## MindDoc" in md and "**Identification**" in md
+
+
+def test_ui_report_supports_csv_and_json(ui_server):
+    csv_body = ui_server.text("/api/report?target=MindDoc&format=csv")
+    assert csv_body.startswith("name,ca,expected_country,status")
+    payload = json.loads(ui_server.text("/api/report?target=MindDoc&format=json"))
+    assert payload["results"][0]["status"] == "found"
+    assert payload["meta"]["base"]
+
+
+def test_ui_report_for_the_whole_loaded_list(ui_server):
+    md = ui_server.text("/api/report?all=1&format=md")
+    for name in ("MindDoc", "HelloBetter Stress und Burnout", "Kalmeda"):
+        assert f"## {name}" in md
+
+
+def test_ui_report_rejects_bad_input(ui_server):
+    assert ui_server.status("/api/report?format=md") == 400        # no target
+    assert ui_server.status("/api/report?target=MindDoc&format=pdf") == 400
+
+
+def test_ui_report_for_an_unknown_name_still_works(ui_server):
+    """A name not in the loaded list is searched as typed."""
+    md = ui_server.text("/api/report?name=Kalmeda&format=md")
+    assert "## Kalmeda" in md
+
+
+def test_ui_exposes_the_risk_class_table(ui_server):
+    """RISK_CLASS_ID is numeric, so the UI needs the labels from /reference."""
+    classes = ui_server.json("/api/riskclasses")["classes"]
+    labels = [c["label"] for c in classes]
+    assert "Class I" in labels and "Class IIa" in labels
+    assert all(isinstance(c["id"], (int, float)) for c in classes)
+
+
+def test_ui_discover_by_risk_class(ui_server):
+    d = ui_server.json("/api/discover?risk_class_id=1")
+    assert d["filters"] == {"RISK_CLASS_ID": "1"}
+    assert d["kept"] == d["rows_returned"] > 0
+    assert d["truncated"] is False
+
+
+def test_ui_discover_keyword_narrows_locally(ui_server):
+    d = ui_server.json("/api/discover?risk_class_id=1&keyword=tinnitus")
+    assert d["keyword"] == ["tinnitus"]
+    assert [x["trade_name"] for x in d["devices"]] == ["Kalmeda"]
+    assert d["kept"] < d["rows_returned"]
+
+
+def test_ui_discover_needs_a_server_side_filter(ui_server):
+    assert ui_server.status("/api/discover?keyword=depression") == 400

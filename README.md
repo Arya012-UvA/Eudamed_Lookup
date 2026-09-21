@@ -134,6 +134,18 @@ Searching an identifier — `MF_SRN`, `PRIMARY_DI` or `BASIC_UDI` — is treated
 an identifier match rather than a name comparison, so pasting an SRN lists
 every device that manufacturer has registered.
 
+**Downloads.** After any search a download bar offers `report.md`, `results.csv`
+and `results.json` for that device, plus the whole loaded list as Markdown.
+These are produced by the same writers the CLI uses, so a document downloaded
+from the browser cannot drift from the command-line one. The link re-queries the
+API, so it takes a moment for a long list.
+
+**Discover by filter** is in the UI too, under *Discover by filter*: pick a risk
+class (populated from `/reference`, since `RISK_CLASS_ID` is numeric), or give an
+EMDN code or medical purpose, plus optional keywords. Keywords narrow the rows
+the API returned rather than being sent as a filter, so the UI refuses a
+keywords-only search instead of silently returning nothing.
+
 ### `discover` — find devices by filter, not by name
 
 For questions like *"all class I software for psychological conditions"*, where
@@ -323,7 +335,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 202 tests
+pytest -q          # 211 tests
 ruff check eudamed tests
 ```
 
@@ -472,7 +484,7 @@ eudamed/
                   filtertest, discover, raw
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            202 tests, no network required
+tests/            211 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
