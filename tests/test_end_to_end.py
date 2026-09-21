@@ -82,12 +82,35 @@ def test_csv_response_format_works_end_to_end(live_server, tmp_path):
 
 
 def test_device_name_field_search(live_server, tmp_path):
-    """MindDoc's DEVICE_NAME mentions 'depression'; TRADE_NAME does not."""
+    """DEVICE_NAME is filterable, but exactly - the whole string is compared."""
+    out = tmp_path / "res"
+    main(["search", "--base", live_server, "--key", "dummy",
+          "--trade-name", "MindDoc depression therapy software",
+          "--out", str(out), "--fields", "DEVICE_NAME", "--delay", "0"])
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    assert result["total_matches"] == 1
+
+
+def test_filters_are_exact_not_substring(live_server, tmp_path):
+    """The live API compares the whole trade name, so a substring finds nothing.
+
+    This is the behaviour that makes a plain name search useless: "depression"
+    does not match "MindDoc depression therapy software".
+    """
     out = tmp_path / "res"
     main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "depression",
           "--out", str(out), "--fields", "DEVICE_NAME", "--delay", "0"])
     result = json.loads((out / "results.json").read_text())["results"][0]
-    assert result["total_matches"] == 1
+    assert result["total_matches"] == 0
+    assert result["status"] == "not found"
+
+
+def test_filters_are_case_insensitive(live_server, tmp_path):
+    out = tmp_path / "res"
+    main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MINDDOC",
+          "--out", str(out), "--delay", "0"])
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    assert result["candidates"][0]["trade_name"] == "MindDoc"
 
 
 def test_require_key_exits_auth_without_requests(live_server, tmp_path, monkeypatch, capsys):
@@ -128,7 +151,7 @@ def test_probe_saves_raw_bodies(live_server, tmp_path):
 
 def test_actors_command(live_server, capsys):
     assert main(["actors", "--base", live_server, "--key", "dummy",
-                 "--name", "MindDoc", "--delay", "0"]) == EXIT_OK
+                 "--name", "MindDoc Health GmbH", "--delay", "0"]) == EXIT_OK
     actors = json.loads(capsys.readouterr().out)
     assert actors[0]["actor_id"] == "DE-MF-000025123"
     assert actors[0]["country"] == "DE"
@@ -241,7 +264,7 @@ def test_ui_rejects_bad_input(ui_server, path, code):
 
 
 def test_ui_actors(ui_server):
-    d = ui_server.json("/api/actors?name=MindDoc")
+    d = ui_server.json("/api/actors?name=MindDoc+Health+GmbH")
     assert d["actors"][0]["actor_id"] == "DE-MF-000025123"
 
 

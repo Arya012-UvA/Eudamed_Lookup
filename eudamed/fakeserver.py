@@ -100,21 +100,31 @@ TABLES = {"/udi": (DEVICES, config.UDI_PARAMS),
           "/reference": (REFERENCE, config.REFERENCE_PARAMS)}
 
 
-def filter_rows(rows, params, allowed):
-    """Case-insensitive substring filtering, which is how the EUDAMED UI behaves."""
+def filter_rows(rows, params, allowed, substring=False):
+    """Filter rows the way the live API does: exact, case-insensitive.
+
+    Confirmed against the real gateway: TRADE_NAME=Mind returns the device
+    literally named MIND, not anything beginning with "Mind". A stand-in that
+    did substring matching would let tests pass while the real API returned
+    nothing, so exact matching is the default and substring is opt-in.
+    """
     out = rows
     for name, values in params.items():
         if name in ("format", "api-version", config.KEY_QUERY):
             continue
         if name not in allowed:
             return None, f"Unknown parameter {name}"
-        needle = (values[0] or "").lower()
-        out = [r for r in out if needle in str(r.get(name, "")).lower()]
+        wanted = (values[0] or "").strip().lower()
+        if substring:
+            out = [r for r in out if wanted in str(r.get(name, "")).lower()]
+        else:
+            out = [r for r in out if str(r.get(name, "")).strip().lower() == wanted]
     return out, None
 
 
 class Handler(BaseHTTPRequestHandler):
     require_key = True
+    substring = False
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -157,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         table, allowed = TABLES[path]
-        rows, problem = filter_rows(table, params, allowed)
+        rows, problem = filter_rows(table, params, allowed, substring=self.substring)
         if problem:
             self._error(400, problem)
             return
@@ -172,8 +182,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(rows))
 
 
-def serve(port=8099, host="127.0.0.1", require_key=True, verbose=False):
+def serve(port=8099, host="127.0.0.1", require_key=True, verbose=False,
+          substring=False):
     Handler.require_key = require_key
+    Handler.substring = substring
     server = ThreadingHTTPServer((host, port), Handler)
     server.verbose = verbose
     return server
@@ -184,12 +196,19 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--no-key", action="store_true", help="do not require a subscription key")
+    parser.add_argument("--substring", action="store_true",
+                        help="match filters as substrings. The real API does NOT do this; "
+                             "only useful for exploring what substring search would give")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
-    server = serve(args.port, args.host, require_key=not args.no_key, verbose=not args.quiet)
+    server = serve(args.port, args.host, require_key=not args.no_key,
+                   verbose=not args.quiet, substring=args.substring)
     base = f"http://{args.host}:{args.port}/eudamed"
     print(f"Fake EUDAMED Public API on {base}")
     print(f"  {len(DEVICES)} devices, {len(ACTORS)} actors, {len(REFERENCE)} reference codes")
+    mode = ("substring (NOT how the real API behaves)" if args.substring
+            else "exact, case-insensitive (as the real API)")
+    print(f"  filter matching: {mode}")
     print(f"  try: python3 -m eudamed search --base {base} --key dummy --trade-name MindDoc")
     try:
         server.serve_forever()

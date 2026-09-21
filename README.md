@@ -348,9 +348,15 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 229 tests
+pytest -q          # 231 tests
 ruff check eudamed tests
 ```
+
+The stand-in matches filters **exactly and case-insensitively, as the live API
+does**. It originally did substring matching, which let tests pass while real
+requests returned nothing — a stand-in that behaves unlike the thing it stands
+in for is worse than none. `--substring` opts into the old behaviour if you want
+to see what substring search would have given.
 
 It also syntax-checks the JavaScript embedded in both HTML pages with `node`
 (skipped if node is absent). Each page is one large Python string, so a bad
@@ -552,7 +558,7 @@ eudamed/
   cache.py        local row cache, since the API cannot be searched fuzzily
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            229 tests, no network required
+tests/            231 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
