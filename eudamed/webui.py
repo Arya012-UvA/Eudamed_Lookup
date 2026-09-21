@@ -247,6 +247,12 @@ details.opts summary{cursor:pointer}
 border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
 .verdict{font-size:19px;font-weight:600;margin:0 0 4px}
 .verdict.found{color:var(--found)}.verdict.possible{color:var(--possible)}.verdict.none{color:var(--none)}
+.verdict.error{color:var(--warn)}
+.errbox{background:var(--band);border-left:3px solid var(--warn);padding:11px 14px;
+border-radius:0 6px 6px 0;margin:0 0 14px;font-size:13px}
+.errbox strong{color:var(--warn)}
+.errbox ul{margin:7px 0 0;padding-left:18px}
+.errbox li{margin:3px 0;word-break:break-word}
 .card{border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin:0 0 12px;
 background:var(--card)}
 .card h3{margin:0;font-size:16px;display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
@@ -383,6 +389,29 @@ fetch("/api/devices").then(r => r.json()).then(d => {
 
 const cls = s => s >= TH.found ? "found" : s >= TH.possible ? "possible" : "none";
 const word = s => s >= TH.found ? "found" : s >= TH.possible ? "possible" : "not found";
+const statusCls = s => s === "found" ? "found" : s === "possible" ? "possible"
+  : s === "error" ? "error" : "none";
+
+/* Turn a raw request failure into something actionable. */
+function explain(errors) {
+  const all = (errors || []).join(" ");
+  if (/10061|Connection refused|actively refused/i.test(all))
+    return `Nothing is listening at the address being queried. If you are using the bundled
+      stand-in, start it in another terminal with <code>python -m eudamed.fakeserver</code>
+      and search again.`;
+  if (/getaddrinfo|Name or service not known|nodename nor servname|11001/i.test(all))
+    return `The API host name could not be resolved. Check the <code>--base</code> URL and your
+      network or DNS.`;
+  if (/timed out|timeout/i.test(all))
+    return `The API did not respond in time. Try again, or raise <code>--timeout</code>.`;
+  if (/\b40[13]\b|subscription key/i.test(all))
+    return `The subscription key was rejected. Restart with a valid <code>--key</code>, or try
+      <code>--auth-mode query</code>.`;
+  if (/\b404\b/i.test(all))
+    return `The endpoint was not found. Check that <code>--base</code> ends in
+      <code>/eudamed</code>.`;
+  return `The request did not complete, so nothing was checked.`;
+}
 
 function card(c, searched) {
   const isMfr = c.matched_on === "manufacturer";
@@ -402,9 +431,17 @@ function card(c, searched) {
 
 function render(d) {
   const best = d.candidates[0];
-  let html = `<p class="verdict ${best ? cls(best.score) : "none"}">`
-    + `${best ? word(best.score) : "not found"}</p>`;
-  if (!d.candidates.length) {
+  const isError = d.status === "error";
+  let html = `<p class="verdict ${isError ? "error" : best ? cls(best.score) : "none"}">`
+    + `${isError ? "could not check" : best ? word(best.score) : "not found"}</p>`;
+
+  if (isError) {
+    // Every request failed, so registration is unknown - not absent.
+    html += `<div class="errbox"><strong>This is not a "not found".</strong> Every request
+      failed, so the register was never consulted and this device's registration is
+      <em>unknown</em>. ${explain(d.errors)}
+      <ul>${(d.errors || []).map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul></div>`;
+  } else if (!d.candidates.length) {
     html += `<p class="sub">No candidate scored above the minimum. Try enabling DEVICE_NAME
       under Options, lowering the minimum score, or a different spelling.</p>`;
   }
@@ -419,7 +456,7 @@ function render(d) {
   html += `<p class="meta">${d.total_matches} row(s) returned. Queries: ${qs}.
     Scores rank candidates; they do not confirm registration &mdash; open the EUDAMED link to
     verify.</p>`;
-  if ((d.errors || []).length)
+  if (!isError && (d.errors || []).length)
     html += `<div class="warnbox">${d.errors.map(esc).join("<br>")}</div>`;
   $("out").innerHTML = html;
 }
@@ -489,16 +526,22 @@ function renderSummary() {
   const rows = BATCH.map((d, i) => {
     const b = d.candidates[0] && d.status !== "not found" ? d.candidates[0] : {};
     return `<tr class="row" data-b="${i}"><td>${esc(d.name)}</td>
-      <td class="st ${cls(b.score ?? 0)}">${esc(d.status)}</td>
+      <td class="st ${statusCls(d.status)}">${esc(d.status)}</td>
       <td>${esc(b.trade_name || "")}</td>
       <td>${esc(b.manufacturer_name || "")}</td>
       <td>${b.matched_on ? `<span class="chip${b.matched_on === "manufacturer" ? " mfr" : ""}">${esc(b.matched_on)}</span>` : ""}</td></tr>`;
   }).join("");
-  $("summary").innerHTML = `<p class="sub" style="margin:14px 0 0">
-      <strong>${tally("found")}</strong> found &middot; <strong>${tally("possible")}</strong> possible
-      &middot; <strong>${tally("not found")}</strong> not found &middot; click a row for detail</p>
-    <table class="sum"><thead><tr><th>Device</th><th>Status</th><th>Best match</th>
-    <th>Manufacturer</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const nErr = tally("error");
+  const head = `<p class="sub" style="margin:14px 0 0">`
+    + `<strong>${tally("found")}</strong> found &middot; `
+    + `<strong>${tally("possible")}</strong> possible &middot; `
+    + `<strong>${tally("not found")}</strong> not found`
+    + (nErr ? ` &middot; <strong class="st error">${nErr}</strong> could not be checked` : "")
+    + ` &middot; click a row for detail</p>`;
+  const table = `<table class="sum"><thead><tr><th>Device</th><th>Status</th>`
+    + `<th>Best match</th><th>Manufacturer</th><th>Evidence</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table>`;
+  $("summary").innerHTML = head + table;
   $("summary").querySelectorAll("tr.row").forEach(tr => tr.addEventListener("click", () => {
     const d = BATCH[+tr.dataset.b];
     $("name").value = d.name;

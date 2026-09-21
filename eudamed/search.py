@@ -4,7 +4,7 @@ import csv
 
 from .client import ApiError, AuthError
 from .fields import describe_keys
-from .matching import classify, score_device, score_identifier
+from .matching import STATUS_ERROR, STATUS_NOT_FOUND, classify, score_device, score_identifier
 from .records import Device
 
 
@@ -115,7 +115,15 @@ def search_target(client, target, reference=None, top=5, min_score=0.45,
     candidates.sort(key=lambda c: (-c["score"], c["matched_on"] == "manufacturer",
                                    c["latest_version"] is False, c["trade_name"]))
     candidates = candidates[:top]
-    status = classify(candidates[0]["score"]) if candidates else "not found"
+
+    if candidates:
+        status = classify(candidates[0]["score"])
+    elif queries and all(q["error"] for q in queries):
+        # No query succeeded, so the register was never actually consulted.
+        # Saying "not found" here would assert something that was not checked.
+        status = STATUS_ERROR
+    else:
+        status = STATUS_NOT_FOUND
 
     return {
         **target.to_dict(),
@@ -140,6 +148,8 @@ def run(client, targets, reference=None, top=5, min_score=0.45,
         if progress:
             top_c = result["candidates"][0] if result["candidates"] else None
             detail = ""
+            if result["status"] == STATUS_ERROR:
+                detail = f" ({len(result['errors'])} request error(s) - nothing checked)"
             if top_c:
                 detail = (f" (best: {top_c['trade_name']!r} {top_c['score']} "
                           f"via {top_c['matched_on']})")

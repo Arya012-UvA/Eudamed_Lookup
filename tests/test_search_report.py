@@ -109,12 +109,35 @@ def test_min_score_and_top(client_factory):
     assert len(capped["candidates"]) == 1
 
 
-def test_request_errors_are_recorded_not_fatal(client_factory):
+def test_request_errors_report_error_not_not_found(client_factory):
+    """If every query failed, the register was never consulted. Reporting
+    "not found" would assert a device is unregistered when nothing was
+    checked - a materially wrong answer, not a cosmetic one."""
     client = client_factory(opener=error_opener(500), retries=1)
     result = search_target(client, Target("MindDoc", keys=["MindDoc"]))
-    assert result["status"] == "not found"
+    assert result["status"] == "error"
     assert result["errors"] and "500" in result["errors"][0]
     assert result["queries"][0]["error"]
+
+
+def test_partial_failure_still_reports_not_found(client_factory):
+    """One query failing while another succeeds and returns nothing is a
+    genuine 'not found', not an error."""
+    calls = {"n": 0}
+
+    def opener(req, timeout=None):
+        import urllib.error
+
+        from conftest import FakeResp
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(req.full_url, 500, "err", {}, None)
+        return FakeResp(b"[]")
+
+    client = client_factory(opener=opener, retries=1)
+    result = search_target(client, Target("MindDoc", keys=["MindDoc", "Mind Doc"]))
+    assert result["status"] == "not found"
+    assert len(result["errors"]) == 1
 
 
 def test_auth_error_aborts_the_whole_run(client_factory):

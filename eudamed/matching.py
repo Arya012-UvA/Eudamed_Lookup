@@ -22,6 +22,16 @@ from difflib import SequenceMatcher
 FOUND = 0.85
 POSSIBLE = 0.60
 
+# Statuses. ERROR is distinct from NOT_FOUND on purpose: "the register does not
+# list this device" and "the register could not be reached" are different
+# answers, and conflating them reports a device as unregistered when in fact
+# nothing was checked.
+STATUS_FOUND = "found"
+STATUS_POSSIBLE = "possible"
+STATUS_NOT_FOUND = "not found"
+STATUS_ERROR = "error"
+ALL_STATUSES = (STATUS_FOUND, STATUS_POSSIBLE, STATUS_NOT_FOUND, STATUS_ERROR)
+
 # Manufacturer-name evidence alone never reaches POSSIBLE, whatever the
 # country bonus. This invariant is covered by a test.
 MANUFACTURER_CAP = 0.55
@@ -135,7 +145,7 @@ def score_identifier(param, term, device):
 
 def classify(score):
     if score >= FOUND:
-        return "found"
+        return STATUS_FOUND
     if score >= POSSIBLE:
-        return "possible"
-    return "not found"
+        return STATUS_POSSIBLE
+    return STATUS_NOT_FOUND

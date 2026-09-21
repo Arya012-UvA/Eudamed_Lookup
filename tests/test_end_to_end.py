@@ -302,3 +302,55 @@ def test_ui_flags_a_local_base_as_demo_mode(ui_server):
 def test_is_local_detection(base, expected):
     from eudamed.webui import _is_local
     assert _is_local(base) is expected
+
+
+# --- unreachable backend ------------------------------------------------
+def test_error_status_when_the_api_cannot_be_reached(tmp_path, capsys):
+    """A connection failure must not be reported as 'not found'. Registration
+    is unknown, not absent, and conflating the two asserts something that was
+    never checked."""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,country,keys\nMindDoc,DE,MindDoc\n", encoding="utf-8")
+    out = tmp_path / "res"
+    # Port 9 (discard) with nothing bound: a refused connection.
+    code = main(["search", "--base", "http://127.0.0.1:9/eudamed", "--key", "dummy",
+                 "--input", str(csv_path), "--out", str(out),
+                 "--delay", "0", "--retries", "1", "--timeout", "2",
+                 "--no-resolve-codes"])
+    assert code == EXIT_OK
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    assert result["status"] == "error"
+    assert result["candidates"] == [] and result["errors"]
+    assert "nothing checked" in capsys.readouterr().err
+
+    rows = list(csv.DictReader((out / "results.csv").open(encoding="utf-8")))
+    assert rows[0]["status"] == "error"
+    assert rows[0]["trade_name"] == ""          # nothing may be promoted as a match
+
+    html = (out / "report.html").read_text(encoding="utf-8")
+    assert "could not be checked" in html
+
+
+def test_ui_reports_error_not_not_found_when_backend_is_down(live_server):
+    """Same guarantee through the web UI."""
+    import threading
+
+    from eudamed.client import Client
+    from eudamed.webui import serve as make_ui
+    client = Client(base="http://127.0.0.1:9/eudamed", key="dummy", delay=0,
+                    backoff_base=0, retries=1, timeout=2)
+    server = make_ui(client, port=0)
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        from conftest import UIClient
+        ui = UIClient(f"http://{host}:{port}")
+        d = ui.json("/api/search?name=MindDoc")
+        assert d["status"] == "error"
+        assert d["candidates"] == [] and d["errors"]
+        page = ui.text("/")
+        assert "could not check" in page and "This is not a" in page
+    finally:
+        server.shutdown()
+        server.server_close()

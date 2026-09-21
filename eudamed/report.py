@@ -29,7 +29,8 @@ def write_csv(results, path):
             # Only promote a candidate to the flat row when it is an actual
             # match; a sub-threshold lead must not read as the answer.
             best = result["candidates"][0] if (
-                result["candidates"] and result["status"] != "not found") else {}
+                result["candidates"]
+                and result["status"] not in ("not found", "error")) else {}
             writer.writerow({
                 **best,
                 "name": result["name"],
@@ -113,6 +114,7 @@ tr.dev:hover{background:var(--band)}
 tr.dev:focus-visible{outline:2px solid var(--link);outline-offset:-2px}
 .st{font-weight:600}
 .st.found{color:var(--found)}.st.possible{color:var(--possible)}.st.none{color:var(--none)}
+.st.error{color:var(--warn)}
 .muted{color:var(--muted);font-size:13px}
 .chip{display:inline-block;background:var(--chip);color:var(--muted);border-radius:10px;
 padding:1px 8px;font-size:11px;white-space:nowrap}
@@ -137,7 +139,8 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 <div class="controls">
 <input id="q" type="search" placeholder="Filter by name, manufacturer, SRN or UDI-DI" aria-label="Filter">
 <select id="f" aria-label="Status"><option value="">All statuses</option>
-<option>found</option><option>possible</option><option>not found</option></select>
+<option>found</option><option>possible</option><option>not found</option>
+<option>error</option></select>
 <select id="m" aria-label="Evidence"><option value="">All evidence</option>
 <option value="trade_name">Trade name</option><option value="device_name">Device name</option>
 <option value="manufacturer">Manufacturer only</option></select>
@@ -151,17 +154,23 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 <script>
 const DATA = __DATA__, META = __META__;
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
-const cls = s => s === "found" ? "found" : s === "possible" ? "possible" : "none";
+const cls = s => s === "found" ? "found" : s === "possible" ? "possible"
+  : s === "error" ? "error" : "none";
 const openRows = new Set();
 document.getElementById("sub").textContent =
   `${DATA.length} device(s) searched against ${META.base || "the EUDAMED Public API"} on ${META.generated || "-"}`
   + `${META.fields ? " by " + META.fields : ""}. Click a row for all candidates.`;
 const count = s => DATA.filter(d => d.status === s).length;
-document.getElementById("tally").innerHTML = ["found","possible","not found"]
+document.getElementById("tally").innerHTML = ["found","possible","not found","error"]
+  .filter(s => s !== "error" || count(s))
   .map(s => `<div><b class="st ${cls(s)}">${count(s)}</b><span>${s}</span></div>`).join("");
+const nErr = count("error");
 const mfrOnly = DATA.filter(d => d.candidates.some(c => c.matched_on === "manufacturer")).length;
 document.getElementById("note").innerHTML =
-  `Scores rank candidates, they do not confirm registration &mdash; always open the EUDAMED link before relying on a match.`
+  (nErr ? `<strong>${nErr} device(s) could not be checked</strong> &mdash; every request for them
+    failed, so their registration is unknown, not absent. Fix the errors shown on those rows and
+    re-run. ` : "")
+  + `Scores rank candidates, they do not confirm registration &mdash; always open the EUDAMED link before relying on a match.`
   + (mfrOnly ? ` ${mfrOnly} device(s) have manufacturer-only leads, shown with a <span class="chip mfr">manufacturer</span> chip: the manufacturer name matched but the trade name did not, so these are never counted as found.` : "");
 const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Model","device_model"],
 ["Manufacturer","manufacturer_name"],["Manufacturer SRN","mf_srn"],["Manufacturer country","manufacturer_country"],
