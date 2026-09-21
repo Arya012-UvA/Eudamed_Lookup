@@ -360,8 +360,11 @@ let DEVICES = [];
 
 fetch("/api/health").then(r => r.json()).then(h => {
   TH = h.thresholds || TH;
+  // No key is needed: the live API answers anonymous requests. Saying "no key
+  // configured" in bold read as a warning about a problem that does not exist.
   $("sub").innerHTML = `Querying <code>${esc(h.base)}</code>`
-    + (h.has_key ? "" : ' &middot; <strong>no subscription key configured</strong>');
+    + (h.has_key ? " &middot; using a subscription key"
+                 : " &middot; anonymous (no key required)");
   if (h.is_local) {
     $("demo").className = "demo";
     $("demo").innerHTML = `<strong>Demo mode.</strong> This is the bundled local stand-in, which

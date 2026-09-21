@@ -96,9 +96,13 @@ browser, which also sidesteps the CORS restrictions that block calling the API
 directly from a page.
 
 ```bash
-python3 -m eudamed serve --key YOUR_KEY
+python3 -m eudamed serve --input devices.csv
 # EUDAMED search UI on http://127.0.0.1:8100
+#   querying https://api.datalake.sante.service.ec.europa.eu/eudamed
 ```
+
+No `--base` means the live API, and no key is needed. Pass `--base` only to
+point at the bundled stand-in for offline testing.
 
 It opens your browser automatically (`--no-open` to suppress, `--port` to
 change the port). Type a name, pick an expected country, press Search. Under
@@ -108,7 +112,7 @@ score and the result count, and turn off `/reference` code resolution.
 **Load your own list into the UI** with `--input`:
 
 ```bash
-python3 -m eudamed serve --key YOUR_KEY --input devices.csv
+python3 -m eudamed serve --input devices.csv
 ```
 
 The page then shows every device as a clickable chip, autocompletes the search
