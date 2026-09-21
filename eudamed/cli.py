@@ -784,12 +784,16 @@ def build_parser():
     search.add_argument("--country", help="expected manufacturer country ISO2, e.g. DE")
     search.add_argument("--input", help="CSV of devices: name,description,ca,country,keys,broad")
     search.add_argument("--out", default="eudamed_results", help="output directory")
-    search.add_argument("--fields", default="TRADE_NAME",
-                        help="comma-separated /udi parameters to search each term against, "
-                             "e.g. TRADE_NAME,DEVICE_NAME (default TRADE_NAME)")
+    search.add_argument("--fields", default=config.DEFAULT_SEARCH_FIELDS,
+                        help="comma-separated /udi parameters to search each term against. "
+                             f"Default {config.DEFAULT_SEARCH_FIELDS}: filters are exact, so "
+                             "querying several fields is what finds a device whose trade "
+                             "name differs from its device name")
     search.add_argument("--top", type=int, default=5, help="candidates kept per device")
-    search.add_argument("--min-score", type=float, default=0.45,
-                        help="discard candidates below this score (default 0.45)")
+    search.add_argument("--min-score", type=float, default=0.0,
+                        help="discard candidates below this score (default 0.0). The "
+                             "filters are exact, so almost every returned row is a real "
+                             "hit; a floor mostly discards good matches")
     search.add_argument("--no-resolve-codes", dest="resolve_codes", action="store_false",
                         help="skip the /reference call that turns numeric ids into codes")
     search.add_argument("--language", default="en", help="language for /reference labels")
@@ -900,16 +904,16 @@ def build_parser():
     return parser
 
 
-NAME_DRIVEN = {"search", "serve"}
-
-
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if getattr(args, "backend", None) is None:
-        # A name search is useless against exact-match filters, so those
-        # commands default to the UI backend; the rest use documented filters
-        # and default to the documented API.
-        args.backend = "ui" if args.command in NAME_DRIVEN else "datalake"
+        # The documented API is the default everywhere. Its filters are exact,
+        # but searching several fields at once still finds most devices: a
+        # device whose TRADE_NAME is "MindDoc: Your Companion" has DEVICE_NAME
+        # "MindDoc", so DEVICE_NAME matches exactly and the local scorer then
+        # recognises the trade name. --backend ui is available for genuine
+        # substring search.
+        args.backend = "datalake"
     try:
         return args.func(args)
     except KeyboardInterrupt:

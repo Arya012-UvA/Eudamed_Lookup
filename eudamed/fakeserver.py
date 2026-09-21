@@ -26,8 +26,11 @@ from urllib.parse import parse_qs, urlparse
 from . import config
 
 DEVICES = [
+    # Shaped like the real registry entry: the trade name carries a suffix the
+    # device name does not, so only DEVICE_NAME matches the term "MindDoc"
+    # exactly. This is why searching several fields is the default.
     {"PRIMARY_DI": "04260703120019", "BASIC_UDI": "426070312MINDDOC01",
-     "TRADE_NAME": "MindDoc", "DEVICE_NAME": "MindDoc depression therapy software",
+     "TRADE_NAME": "MindDoc: Your Companion", "DEVICE_NAME": "MindDoc",
      "DEVICE_MODEL": "", "REFERENCE": "MD-1", "NOMENCLATURE_CODE": "Z12010203",
      "RISK_CLASS_ID": 2, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
      "SPECIAL_DEVICE_TYPE_ID": 1, "DEVICE_STATUS_TYPE_ID": 1, "MF_SRN": "DE-MF-000025123",

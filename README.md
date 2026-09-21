@@ -262,9 +262,9 @@ MindDoc,Software for psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-00002512
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--fields` | `TRADE_NAME` | Which `/udi` parameters to search each term against |
+| `--fields` | all five name-bearing params | Which `/udi` parameters to search each term against |
 | `--top` | `5` | Candidates kept per device |
-| `--min-score` | `0.45` | Discard candidates below this |
+| `--min-score` | `0.0` | Discard candidates below this. Exact filters mean a floor mostly discards good matches |
 | `--format` | `json` | `json` or `csv` — the API supports both |
 | `--auth-mode` | `header` | Where to put the subscription key |
 | `--no-resolve-codes` | off | Skip the `/reference` call that turns numeric ids into codes |
@@ -348,7 +348,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 245 tests
+pytest -q          # 250 tests
 ruff check eudamed tests
 ```
 
@@ -437,7 +437,7 @@ python3 -m eudamed search --input devices.example.csv --out results -v
 EUDAMED is served by two different APIs, and they differ in the one way that
 matters for searching by name.
 
-| | `ui` (default for `search`, `serve`) | `datalake` |
+| | `ui` | `datalake` (default) |
 | --- | --- | --- |
 | Host | `ec.europa.eu/tools/eudamed/api` | `api.datalake.sante.service.ec.europa.eu` |
 | What it is | the EUDAMED website's own backend | the documented public API |
@@ -446,20 +446,27 @@ matters for searching by name.
 | Documented | no — can change without notice | yes, OpenAPI |
 | Credential | none | none needed in practice |
 
-**Use `ui` to find devices by name.** The documented API compares the whole
-trade name, so `TRADE_NAME=MindDoc` returns nothing unless that is the exact
-registered string — which makes a name search unable to distinguish "not
-registered" from "registered under a different name". The website's backend
-does substring matching and pagination, so a partial name works.
+**`datalake` is the default everywhere**, including for name searches, because
+exact matching turns out not to be the obstacle it looks like. Searching every
+name-bearing field at once is what makes it work:
 
-`search` and `serve` therefore default to `ui`. The filter-driven commands
-(`probe`, `discover`, `scan`, `filtertest`, `reference`) default to `datalake`,
-which is where the documented filters and the code tables live. Override either
-with `--backend`:
+> MindDoc is registered with `TRADE_NAME` = `MindDoc: Your Companion` and
+> `DEVICE_NAME` = `MindDoc`. So `TRADE_NAME=MindDoc` misses it, and
+> `DEVICE_NAME=MindDoc` matches exactly. The local scorer then sees `MindDoc`
+> inside the trade name and reports `trade_name:contains` at 0.97.
+
+That is why `--fields` defaults to all five name-bearing parameters and
+`--min-score` defaults to `0.0`: filters are exact, so a returned row is almost
+always a real hit, and a score floor mostly discards good matches. Against the
+real register this configuration finds the large majority of a 23-device list.
+
+`--backend ui` is available when you want genuine substring search — it is the
+only way to find a device whose registered strings all differ from the name you
+have:
 
 ```bash
-python3 -m eudamed search --input devices.csv --out results          # ui, substring
-python3 -m eudamed search --input devices.csv --backend datalake     # exact only
+python3 -m eudamed search --input devices.csv --out results        # datalake, 5 fields
+python3 -m eudamed search --input devices.csv --backend ui         # substring
 ```
 
 `--backend ui` adds `--page-size` and `--max-pages`, since that backend
@@ -594,7 +601,7 @@ eudamed/
   cache.py        local row cache, for fuzzy matching on the datalake backend
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            245 tests, no network required
+tests/            250 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

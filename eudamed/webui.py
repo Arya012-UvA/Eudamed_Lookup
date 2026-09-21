@@ -152,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "give a name to search for"})
             return
 
-        fields = (query.get("fields") or "TRADE_NAME").upper()
+        fields = (query.get("fields") or config.DEFAULT_SEARCH_FIELDS).upper()
         chosen = [f.strip() for f in fields.split(",") if f.strip()]
         bad = [f for f in chosen if f not in config.UDI_PARAMS]
         if bad or not chosen:
@@ -178,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             result = match_cached(list(cache.devices(reference)), target,
                                   top=int(query.get("top") or 10),
-                                  min_score=float(query.get("min_score") or 0.3))
+                                  min_score=float(query.get("min_score") or 0.0))
             result["cache"] = self._cache_state()
             self._json(200, result)
             return
@@ -186,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = search_target(self.server.client, target, reference=reference,
                                    top=int(query.get("top") or 10),
-                                   min_score=float(query.get("min_score") or 0.3),
+                                   min_score=float(query.get("min_score") or 0.0),
                                    fields=",".join(chosen))
         except AuthError as exc:
             self._json(401, {"error": "auth", "detail": str(exc)})
@@ -202,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _run(self, query, target):
         """Search one target, returning the result dict."""
-        fields = (query.get("fields") or "TRADE_NAME").upper()
+        fields = (query.get("fields") or config.DEFAULT_SEARCH_FIELDS).upper()
         chosen = [f.strip() for f in fields.split(",") if f.strip()]
         bad = [f for f in chosen if f not in config.UDI_PARAMS]
         if bad or not chosen:
@@ -211,10 +211,10 @@ class Handler(BaseHTTPRequestHandler):
         if query.get("use_cache") == "1" and self.server.cache and len(self.server.cache):
             return match_cached(list(self.server.cache.devices(reference)), target,
                                 top=int(query.get("top") or 10),
-                                min_score=float(query.get("min_score") or 0.3))
+                                min_score=float(query.get("min_score") or 0.0))
         return search_target(self.server.client, target, reference=reference,
                              top=int(query.get("top") or 10),
-                             min_score=float(query.get("min_score") or 0.3),
+                             min_score=float(query.get("min_score") or 0.0),
                              fields=",".join(chosen))
 
     def _report(self, query):
@@ -257,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
 
         meta = {"generated": time.strftime("%Y-%m-%d %H:%M"),
                 "base": self.server.client.base,
-                "fields": (query.get("fields") or "TRADE_NAME").upper(),
+                "fields": (query.get("fields") or config.DEFAULT_SEARCH_FIELDS).upper(),
                 "requests": self.server.client.request_count}
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -559,13 +559,13 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
   <div class="optrow">
     <span>Search fields:</span>
     <label><input type="checkbox" class="fld" value="TRADE_NAME" checked> TRADE_NAME</label>
-    <label><input type="checkbox" class="fld" value="DEVICE_NAME"> DEVICE_NAME</label>
-    <label><input type="checkbox" class="fld" value="BASIC_UDI"> BASIC_UDI</label>
-    <label><input type="checkbox" class="fld" value="PRIMARY_DI"> PRIMARY_DI</label>
-    <label><input type="checkbox" class="fld" value="MF_SRN"> MF_SRN</label>
+    <label><input type="checkbox" class="fld" value="DEVICE_NAME" checked> DEVICE_NAME</label>
+    <label><input type="checkbox" class="fld" value="BASIC_UDI" checked> BASIC_UDI</label>
+    <label><input type="checkbox" class="fld" value="PRIMARY_DI" checked> PRIMARY_DI</label>
+    <label><input type="checkbox" class="fld" value="MF_SRN" checked> MF_SRN</label>
   </div>
   <div class="optrow">
-    <label>Min score <input id="min" type="number" min="0" max="1" step="0.05" value="0.3"
+    <label>Min score <input id="min" type="number" min="0" max="1" step="0.05" value="0"
       style="width:5.5em"></label>
     <label>Max results <input id="top" type="number" min="1" max="50" value="10"
       style="width:5em"></label>

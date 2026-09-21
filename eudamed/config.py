@@ -31,6 +31,11 @@ ACTOR_PARAMS = (
 )
 REFERENCE_PARAMS = ("ID", "CODE", "LANGUAGE")
 
+# Fields a device name can appear in. Filters are exact, so searching all of
+# them is what makes a name search work: a device registered as
+# "MindDoc: Your Companion" has DEVICE_NAME "MindDoc", which matches exactly.
+DEFAULT_SEARCH_FIELDS = "TRADE_NAME,DEVICE_NAME,BASIC_UDI,PRIMARY_DI,MF_SRN"
+
 OPERATIONS = {
     "/udi": UDI_PARAMS,
     "/actors": ACTOR_PARAMS,

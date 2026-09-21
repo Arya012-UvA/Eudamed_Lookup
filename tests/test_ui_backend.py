@@ -109,10 +109,10 @@ def test_substring_search_finds_a_partial_name(live_server, tmp_path):
     csv_path.write_text("name,country,keys\nMind,DE,Mind\n", encoding="utf-8")
     out = tmp_path / "r"
     assert main(["search", "--backend", "ui", "--base", live_server,
-                 "--input", str(csv_path), "--out", str(out),
+                 "--input", str(csv_path), "--out", str(out), "--fields", "TRADE_NAME",
                  "--delay", "0", "--retries", "1"]) == EXIT_OK
     result = json.loads((out / "results.json").read_text())["results"][0]
-    assert result["candidates"][0]["trade_name"] == "MindDoc"
+    assert result["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
     assert json.loads((out / "results.json").read_text())["meta"]["backend"] == "ui"
 
 
@@ -127,10 +127,18 @@ def test_same_search_finds_nothing_on_the_documented_api(live_server, tmp_path):
     assert result["status"] == "not found"
 
 
-def test_search_defaults_to_the_ui_backend(capsys):
-    """A name search on the exact-match API is useless, so it must not be the
-    default for the name-driven commands."""
+def test_search_defaults_to_the_documented_api(capsys):
+    """The documented API is the default: its filters are exact, but searching
+    every name-bearing field still finds most devices. --backend ui remains
+    available for genuine substring search."""
     main(["search", "--trade-name", "MindDoc", "--dry-run"])
+    out = capsys.readouterr().out
+    assert "api.datalake.sante.service.ec.europa.eu" in out
+    assert "ec.europa.eu/tools/eudamed/api" not in out
+
+
+def test_ui_backend_is_still_available_on_request(capsys):
+    main(["search", "--trade-name", "MindDoc", "--backend", "ui", "--dry-run"])
     assert "ec.europa.eu/tools/eudamed/api" in capsys.readouterr().out
 
 

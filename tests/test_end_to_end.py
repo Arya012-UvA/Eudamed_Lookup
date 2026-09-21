@@ -30,8 +30,9 @@ def test_search_single_device(live_server, tmp_path, capsys):
     result = payload["results"][0]
     assert result["status"] == "found"
     best = result["candidates"][0]
-    assert best["trade_name"] == "MindDoc"
-    assert best["matched_on"] == "trade_name:exact"
+    # Matched via DEVICE_NAME, then recognised by the local scorer.
+    assert best["trade_name"] == "MindDoc: Your Companion"
+    assert best["matched_on"] == "trade_name:contains"
     assert best["mf_srn"] == "DE-MF-000025123"
     assert best["primary_di"] == "04260703120019"
 
@@ -75,10 +76,10 @@ def test_manufacturer_sibling_is_a_lead_not_a_match(live_server, tmp_path):
           "--out", str(out), "--fields", "TRADE_NAME,MF_SRN", "--delay", "0"])
     cands = json.loads((out / "results.json").read_text())["results"][0]["candidates"]
     by_name = {c["trade_name"]: c for c in cands}
-    assert by_name["MindDoc"]["matched_on"] == "trade_name:exact"
+    assert by_name["MindDoc: Your Companion"]["matched_on"] == "trade_name:contains"
     assert by_name["Moodpath"]["matched_on"] == "manufacturer"
     assert by_name["Moodpath"]["score"] < 0.6
-    assert cands[0]["trade_name"] == "MindDoc"      # real match ranks first
+    assert cands[0]["trade_name"] == "MindDoc: Your Companion"
 
 
 def test_csv_response_format_works_end_to_end(live_server, tmp_path):
@@ -86,14 +87,14 @@ def test_csv_response_format_works_end_to_end(live_server, tmp_path):
     assert main(["search", *DL, "--base", live_server, "--key", "dummy", "--format", "csv",
                  "--trade-name", "MindDoc", "--out", str(out), "--delay", "0"]) == EXIT_OK
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
-    assert best["trade_name"] == "MindDoc"
+    assert best["trade_name"] == "MindDoc: Your Companion"
 
 
 def test_device_name_field_search(live_server, tmp_path):
     """DEVICE_NAME is filterable, but exactly - the whole string is compared."""
     out = tmp_path / "res"
     main(["search", *DL, "--base", live_server, "--key", "dummy",
-          "--trade-name", "MindDoc depression therapy software",
+          "--trade-name", "MindDoc",
           "--out", str(out), "--fields", "DEVICE_NAME", "--delay", "0"])
     result = json.loads((out / "results.json").read_text())["results"][0]
     assert result["total_matches"] == 1
@@ -118,7 +119,8 @@ def test_filters_are_case_insensitive(live_server, tmp_path):
     main(["search", *DL, "--base", live_server, "--key", "dummy", "--trade-name", "MINDDOC",
           "--out", str(out), "--delay", "0"])
     result = json.loads((out / "results.json").read_text())["results"][0]
-    assert result["candidates"][0]["trade_name"] == "MindDoc"
+    # DEVICE_NAME "MindDoc" matched the differently-cased term.
+    assert result["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
 
 
 def test_require_key_exits_auth_without_requests(live_server, tmp_path, monkeypatch, capsys):
@@ -140,7 +142,7 @@ def test_bad_key_is_reported_as_auth(live_server, tmp_path, monkeypatch):
 
 def test_probe_reports_real_field_names(live_server, capsys):
     assert main(["probe", "--base", live_server, "--key", "dummy",
-                 "--trade-name", "MindDoc", "--delay", "0"]) == EXIT_OK
+                 "--trade-name", "MindDoc: Your Companion", "--delay", "0"]) == EXIT_OK
     captured = capsys.readouterr()
     report = json.loads(captured.out)
     assert "TRADE_NAME" in report["/udi"]["fields"]
@@ -152,9 +154,9 @@ def test_probe_reports_real_field_names(live_server, capsys):
 def test_probe_saves_raw_bodies(live_server, tmp_path):
     raw = tmp_path / "raw"
     main(["probe", "--base", live_server, "--key", "dummy", "--raw-dir", str(raw),
-          "--delay", "0"])
+          "--trade-name", "MindDoc: Your Companion", "--delay", "0"])
     saved = json.loads((raw / "udi.json").read_text(encoding="utf-8"))
-    assert saved[0]["TRADE_NAME"] == "MindDoc"
+    assert saved[0]["TRADE_NAME"] == "MindDoc: Your Companion"
 
 
 def test_actors_command(live_server, capsys):
@@ -236,7 +238,7 @@ def test_ui_serves_the_page_and_health(ui_server):
 def test_ui_search_by_name(ui_server):
     d = ui_server.json("/api/search?name=MindDoc&country=DE")
     assert d["status"] == "found"
-    assert d["candidates"][0]["matched_on"] == "trade_name:exact"
+    assert d["candidates"][0]["matched_on"] == "trade_name:contains"
     assert d["candidates"][0]["risk_class"] == "Class IIa"
     # Every code resolved here, so no unresolved-code banner should be attached.
     assert "unresolved_codes" not in d
@@ -301,10 +303,13 @@ def test_ui_target_uses_every_spelling_variant(ui_server):
     terms, not just the one string. Typing the name alone runs one query."""
     d = ui_server.json("/api/search?target=HelloBetter+Stress+und+Burnout")
     terms = [q["term"] for q in d["queries"]]
-    assert terms == ["HelloBetter Stress und Burnout", "HelloBetter Stress", "HelloBetter"]
+    # One query per term per searched field, so terms repeat; order is preserved.
+    assert terms[:3] == ["HelloBetter Stress und Burnout"] * 3
+    assert set(terms) == {"HelloBetter Stress und Burnout", "HelloBetter Stress",
+                          "HelloBetter"}
 
     typed = ui_server.json("/api/search?name=HelloBetter")
-    assert [q["term"] for q in typed["queries"]] == ["HelloBetter"]
+    assert {q["term"] for q in typed["queries"]} == {"HelloBetter"}
 
 
 def test_ui_target_carries_country_and_description(ui_server):
@@ -440,7 +445,7 @@ def test_anonymous_request_succeeds_against_an_open_api(tmp_path, capsys, monkey
         assert code == EXIT_OK
         result = json.loads((out / "results.json").read_text())["results"][0]
         assert result["status"] == "found"
-        assert result["candidates"][0]["trade_name"] == "MindDoc"
+        assert result["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
     finally:
         server.shutdown()
         server.server_close()
@@ -499,7 +504,7 @@ def test_filtertest_calibrates_against_a_real_trade_name(live_server, capsys):
                  "--delay", "0", "--retries", "1"]) == EXIT_OK
     captured = capsys.readouterr()
     report = json.loads(captured.out)
-    assert report["control"] == "MindDoc"
+    assert report["control"] == "MindDoc: Your Companion"
     labels = [t["strategy"] for t in report["trials"]]
     assert labels[0] == "CONTROL: exact real trade name"
     assert report["trials"][0]["rows"] == 1
@@ -548,7 +553,8 @@ def test_filtertest_reports_a_broken_filter_distinctly(live_server, capsys, monk
 # --- raw ----------------------------------------------------------------
 def test_raw_allows_undocumented_parameters(live_server, capsys):
     """raw must bypass the spec allowlist; that is the point of it."""
-    assert main(["raw", "/udi", "--base", live_server, "--param", "TRADE_NAME=MindDoc",
+    assert main(["raw", "/udi", "--base", live_server,
+                 "--param", "DEVICE_NAME=MindDoc",
                  "--delay", "0", "--retries", "1"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "MindDoc" in out
@@ -686,7 +692,7 @@ def test_scan_partitions_and_writes_a_cache(live_server, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "RISK_CLASS_ID=1" in err and "unique row(s)" in err
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line]
-    assert {r["TRADE_NAME"] for r in rows} >= {"MindDoc", "Kalmeda"}
+    assert {r["TRADE_NAME"] for r in rows} >= {"MindDoc: Your Companion", "Kalmeda"}
     meta = json.loads((out.parent / "udi.meta.json").read_text(encoding="utf-8"))
     assert meta["rows"] == len(rows) and meta["partitions"]
 
@@ -722,7 +728,7 @@ def test_search_against_a_cache_matches_approximate_names(live_server, tmp_path)
     # "Mind Doc" is not a registered trade name, so a server-side query would
     # return nothing; locally it matches MindDoc.
     assert result["status"] == "found"
-    assert result["candidates"][0]["trade_name"] == "MindDoc"
+    assert result["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
     assert result["queries"][0]["param"] == "local cache"
 
 
@@ -775,7 +781,7 @@ def test_ui_builds_a_cache_and_then_matches_approximately(ui_server_fresh):
 
     cached = ui_server_fresh.json("/api/search?name=Mind+Doc&use_cache=1")
     assert cached["status"] == "found"
-    assert cached["candidates"][0]["trade_name"] == "MindDoc"
+    assert cached["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
     assert cached["queries"][0]["param"] == "local cache"
     assert cached["cache"]["rows"] == built["rows"]
 
@@ -819,7 +825,70 @@ def test_serve_can_preload_a_cache(live_server, tmp_path, capsys):
         ui = UIClient(f"http://{host}:{port}")
         assert ui.json("/api/cache")["rows"] == len(cache)
         d = ui.json("/api/search?name=Mind+Doc&use_cache=1")
-        assert d["candidates"][0]["trade_name"] == "MindDoc"
+        assert d["candidates"][0]["trade_name"] == "MindDoc: Your Companion"
     finally:
         server.shutdown()
         server.server_close()
+
+
+# --- the multi-field default, which is what makes name search work ------
+def test_multi_field_search_finds_a_suffixed_trade_name(live_server, tmp_path):
+    """The real registry entry is TRADE_NAME "MindDoc: Your Companion" with
+    DEVICE_NAME "MindDoc". Filters are exact, so TRADE_NAME=MindDoc misses it
+    and DEVICE_NAME=MindDoc matches; the local scorer then recognises the trade
+    name. Searching one field only would report this device as not found.
+    """
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,country,keys\nMindDoc,DE,MindDoc\n", encoding="utf-8")
+
+    out = tmp_path / "wide"
+    assert main(["search", *DL, "--base", live_server, "--key", "dummy",
+                 "--input", str(csv_path), "--out", str(out),
+                 "--delay", "0", "--retries", "1"]) == EXIT_OK
+    result = json.loads((out / "results.json").read_text())["results"][0]
+    assert result["status"] == "found"
+    best = result["candidates"][0]
+    assert best["trade_name"] == "MindDoc: Your Companion"
+    assert best["matched_on"] == "trade_name:contains"
+    assert best["score"] >= 0.9
+
+    narrow = tmp_path / "narrow"
+    main(["search", *DL, "--base", live_server, "--key", "dummy",
+          "--input", str(csv_path), "--out", str(narrow), "--fields", "TRADE_NAME",
+          "--delay", "0", "--retries", "1"])
+    assert json.loads((narrow / "results.json").read_text())["results"][0]["status"] \
+        == "not found"
+
+
+def test_default_fields_cover_every_name_bearing_column():
+    from eudamed import config
+    fields = config.DEFAULT_SEARCH_FIELDS.split(",")
+    assert fields[:2] == ["TRADE_NAME", "DEVICE_NAME"]
+    assert all(f in config.UDI_PARAMS for f in fields)
+
+
+def test_default_min_score_keeps_every_returned_row(live_server, tmp_path):
+    """Filters are exact, so a returned row is nearly always a real hit; a
+    score floor discards good matches."""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("name,country,keys\nMindDoc,DE,MindDoc\n", encoding="utf-8")
+    out = tmp_path / "r"
+    main(["search", *DL, "--base", live_server, "--key", "dummy",
+          "--input", str(csv_path), "--out", str(out), "--delay", "0", "--retries", "1"])
+    meta_free = json.loads((out / "results.json").read_text())["results"][0]
+
+    floored = tmp_path / "r2"
+    main(["search", *DL, "--base", live_server, "--key", "dummy",
+          "--input", str(csv_path), "--out", str(floored), "--min-score", "0.99",
+          "--delay", "0", "--retries", "1"])
+    assert len(json.loads((floored / "results.json").read_text())["results"][0]
+               ["candidates"]) < len(meta_free["candidates"])
+
+
+def test_search_defaults_to_the_documented_api(capsys):
+    main(["search", "--trade-name", "MindDoc", "--dry-run"])
+    out = capsys.readouterr().out
+    assert "api.datalake.sante.service.ec.europa.eu" in out
+    # and across every name-bearing field
+    for field in ("TRADE_NAME", "DEVICE_NAME", "BASIC_UDI", "PRIMARY_DI", "MF_SRN"):
+        assert f"{field}=MindDoc" in out
