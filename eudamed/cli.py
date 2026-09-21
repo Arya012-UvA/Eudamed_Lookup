@@ -14,6 +14,7 @@ from .records import Actor, Device
 from .reference import Reference
 from .report import write_all
 from .search import Target, load_targets, run, run_cached
+from .ui_backend import DEFAULT_UI_BASE, UiClient
 
 EXIT_OK, EXIT_ERROR, EXIT_AUTH, EXIT_USAGE = 0, 1, 2, 3
 
@@ -24,8 +25,13 @@ def log(message, indent=False):
 
 def add_common(parser):
     conn = parser.add_argument_group("connection")
+    conn.add_argument("--backend", choices=("ui", "datalake"), default=None,
+                      help="which EUDAMED API to use. 'ui' is the website's own backend: "
+                           "undocumented, but it does SUBSTRING search. 'datalake' is the "
+                           "documented public API, whose filters are EXACT match only")
     conn.add_argument("--base", default=None,
-                      help=f"API base URL (default ${config.BASE_ENV} or {config.DEFAULT_BASE})")
+                      help=f"API base URL (default depends on --backend: "
+                           f"{DEFAULT_UI_BASE} or {config.DEFAULT_BASE})")
     conn.add_argument("--key", default=None,
                       help=f"subscription key (default ${config.KEY_ENV})")
     conn.add_argument("--auth-mode", choices=("header", "query"), default="header",
@@ -51,6 +57,17 @@ def add_common(parser):
 
 
 def make_client(args):
+    """The client for the chosen backend.
+
+    `ui` is the EUDAMED website's own backend: undocumented, but it does
+    substring search, which the documented `datalake` API does not.
+    """
+    if getattr(args, "backend", "datalake") == "ui":
+        return UiClient(base=args.base, delay=args.delay, retries=args.retries,
+                        timeout=args.timeout, verbose=args.verbose,
+                        page_size=getattr(args, "page_size", 100),
+                        max_pages=getattr(args, "max_pages", 5),
+                        language=getattr(args, "language", "en"))
     return Client(base=args.base, key=args.key, auth_mode=args.auth_mode, fmt=args.fmt,
                   delay=args.delay, retries=args.retries, timeout=args.timeout,
                   verbose=args.verbose, api_version=args.api_version)
@@ -65,6 +82,8 @@ def require_key(client, args):
     credential, and /reference served 294 rows. So running without a key is the
     default, and --require-key opts back in to the strict check.
     """
+    if getattr(args, "backend", "datalake") == "ui":
+        return True          # the web-UI backend takes no credential
     if client.key or args.dry_run or not getattr(args, "require_key", False):
         return True
     log("No subscription key, and --require-key was given.")
@@ -147,7 +166,7 @@ def cmd_search(args):
         for target in targets:
             for term in target.keys + target.broad:
                 for param in params:
-                    print(client.build_url("/udi", {param: term}))
+                    print(client.build_url(client.DEVICE_PATH, {param: term}))
         return EXIT_OK
 
     reference = None
@@ -163,7 +182,8 @@ def cmd_search(args):
         log(str(exc))
         return EXIT_AUTH
 
-    meta = {"base": client.base, "fields": args.fields, "format": args.fmt,
+    meta = {"base": client.base, "backend": args.backend,
+            "fields": args.fields, "format": args.fmt,
             "requests": client.request_count, "api_version": args.api_version,
             "reference_loaded": bool(reference and reference.tables),
             "tool_version": __import__("eudamed").__version__}
@@ -393,7 +413,7 @@ def cmd_serve(args):
                          verbose=args.verbose, targets=targets, cache=cache)
     url = f"http://{args.host}:{args.port}"
     log(f"EUDAMED search UI on {url}")
-    log(f"  querying {client.base}")
+    log(f"  querying {client.base}  (--backend {args.backend})")
     if targets:
         log(f"  {len(targets)} device(s) loaded from {args.input}")
     if cache is not None:
@@ -675,7 +695,8 @@ def cmd_filtertest(args):
     client = make_client(args)
     if args.dry_run:
         for label, params in filter_strategies(args.term, args.field):
-            print(f"{label}: {client.build_url('/udi', params, allow_undocumented=True)}")
+            print(f"{label}: "
+                  f"{client.build_url(client.DEVICE_PATH, params, allow_undocumented=True)}")
         return EXIT_OK
 
     # Control: a real value from the dataset. If even this does not match, the
@@ -683,7 +704,7 @@ def cmd_filtertest(args):
     control = None
     log("fetching an unfiltered sample to calibrate against")
     try:
-        rows, body = client.request("/udi", {})
+        rows, body = client.request(client.DEVICE_PATH, {})
         log(f"  unfiltered: {len(rows)} row(s), {len(body)} bytes")
         if len(rows) == 1000:
             log("  note: exactly 1000 rows - almost certainly a server-side cap, "
@@ -709,7 +730,8 @@ def cmd_filtertest(args):
 
     for label, params in trials:
         try:
-            rows, body = client.request("/udi", params, allow_undocumented=True)
+            rows, body = client.request(client.DEVICE_PATH, params,
+                                        allow_undocumented=True)
             names = [Device(r).trade_name for r in rows[:3]]
             results.append({"strategy": label, "params": params, "rows": len(rows),
                             "bytes": len(body), "sample_names": names})
@@ -775,6 +797,10 @@ def build_parser():
                                         "instead of querying the API per name. Required "
                                         "for approximate names, since /udi filters are "
                                         "exact-match")
+    search.add_argument("--page-size", type=int, default=100,
+                        help="rows per page (ui backend only)")
+    search.add_argument("--max-pages", type=int, default=5,
+                        help="pages to walk per query (ui backend only)")
     search.add_argument("--keep-raw", action="store_true",
                         help="include each raw API row in results.json")
     add_common(search)
@@ -874,8 +900,16 @@ def build_parser():
     return parser
 
 
+NAME_DRIVEN = {"search", "serve"}
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if getattr(args, "backend", None) is None:
+        # A name search is useless against exact-match filters, so those
+        # commands default to the UI backend; the rest use documented filters
+        # and default to the documented API.
+        args.backend = "ui" if args.command in NAME_DRIVEN else "datalake"
     try:
         return args.func(args)
     except KeyboardInterrupt:

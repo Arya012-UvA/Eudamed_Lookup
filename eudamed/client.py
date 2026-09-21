@@ -32,6 +32,13 @@ class AuthError(ApiError):
 
 
 class Client:
+    #: Whether to append the datalake API's mandatory format/api-version
+    #: parameters. The web-UI backend takes neither.
+    SEND_FORMAT = True
+
+    #: The device-search path, which differs between the two backends.
+    DEVICE_PATH = "/udi"
+
     def __init__(self, base=None, key=None, auth_mode="header", fmt="json",
                  delay=0.2, retries=4, timeout=60, verbose=False,
                  api_version=config.API_VERSION, opener=None, backoff_base=0.5):
@@ -73,9 +80,10 @@ class Client:
                     f"allowed: {', '.join(allowed)}"
                 )
             query[name] = value
-        query["format"] = self.fmt                     # required by the spec
-        if self.api_version:
-            query["api-version"] = self.api_version    # required by the gateway
+        if self.SEND_FORMAT:
+            query["format"] = self.fmt                 # required by the spec
+            if self.api_version:
+                query["api-version"] = self.api_version  # required by the gateway
         if self.key and self.auth_mode == "query":
             query[config.KEY_QUERY] = self.key
         return f"{self.base}{path}?" + urllib.parse.urlencode(query)

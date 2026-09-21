@@ -348,7 +348,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 231 tests
+pytest -q          # 245 tests
 ruff check eudamed tests
 ```
 
@@ -432,6 +432,40 @@ Check the reported `/udi` field names against `Device.__init__`, then:
 python3 -m eudamed search --input devices.example.csv --out results -v
 ```
 
+## Two backends
+
+EUDAMED is served by two different APIs, and they differ in the one way that
+matters for searching by name.
+
+| | `ui` (default for `search`, `serve`) | `datalake` |
+| --- | --- | --- |
+| Host | `ec.europa.eu/tools/eudamed/api` | `api.datalake.sante.service.ec.europa.eu` |
+| What it is | the EUDAMED website's own backend | the documented public API |
+| Name matching | **substring** | **exact only** |
+| Pagination | yes | none |
+| Documented | no — can change without notice | yes, OpenAPI |
+| Credential | none | none needed in practice |
+
+**Use `ui` to find devices by name.** The documented API compares the whole
+trade name, so `TRADE_NAME=MindDoc` returns nothing unless that is the exact
+registered string — which makes a name search unable to distinguish "not
+registered" from "registered under a different name". The website's backend
+does substring matching and pagination, so a partial name works.
+
+`search` and `serve` therefore default to `ui`. The filter-driven commands
+(`probe`, `discover`, `scan`, `filtertest`, `reference`) default to `datalake`,
+which is where the documented filters and the code tables live. Override either
+with `--backend`:
+
+```bash
+python3 -m eudamed search --input devices.csv --out results          # ui, substring
+python3 -m eudamed search --input devices.csv --backend datalake     # exact only
+```
+
+`--backend ui` adds `--page-size` and `--max-pages`, since that backend
+paginates. It has no `/reference` operation, so numeric code labels come from
+`--backend datalake`.
+
 ## Verified API behaviour
 
 Established by probing the live API, none of it in the specification:
@@ -447,10 +481,11 @@ Established by probing the live API, none of it in the specification:
 | `/udi` columns | 61, against 13 filterable parameters |
 | `/reference` | 294 rows, keyed `(CODE, ID) → VALUE` |
 
-### The exact-match consequence
+### The exact-match consequence (datalake backend only)
 
-A device cannot be found unless you already know its **exact** registered trade
-name. `TRADE_NAME=MindDoc` returns nothing whether or not MindDoc is on the
+On the documented API a device cannot be found unless you already know its
+**exact** registered trade name. The `ui` backend does not have this problem —
+prefer it for name searches. `TRADE_NAME=MindDoc` returns nothing whether or not MindDoc is on the
 register, so a plain name search cannot distinguish "not registered" from
 "registered under a different string".
 
@@ -555,10 +590,11 @@ eudamed/
   report.py       JSON / CSV / HTML writers
   cli.py          argparse CLI: search, actors, reference, probe, serve,
                   filtertest, discover, raw, scan
-  cache.py        local row cache, since the API cannot be searched fuzzily
+  ui_backend.py   the EUDAMED website's backend: substring search, paginated
+  cache.py        local row cache, for fuzzy matching on the datalake backend
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            231 tests, no network required
+tests/            245 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```

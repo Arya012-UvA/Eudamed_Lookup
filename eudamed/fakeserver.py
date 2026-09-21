@@ -95,6 +95,23 @@ REFERENCE = [
     {"ID": 2.0, "CODE": "PLACED_ON_THE_MARKET_ID", "LANGUAGE": "en", "VALUE": "Czechia"},
 ]
 
+# The web-UI backend: camelCase parameters, a {"content": [...]} envelope with
+# pagination, and SUBSTRING matching - which is the whole reason that backend
+# exists in this tool.
+UI_DEVICES = [
+    {"uuid": d["UUID"], "tradeName": d["TRADE_NAME"], "deviceName": d["DEVICE_NAME"],
+     "manufacturerName": d["MF_NAME"], "manufacturerSrn": d["MF_SRN"],
+     "primaryDi": d["PRIMARY_DI"], "basicUdi": d["BASIC_UDI"],
+     "riskClass": {"code": f"RISK_CLASS.{d['RISK_CLASS_ID']}"},
+     "deviceStatusType": {"code": "DEVICE_STATUS.ON_THE_MARKET"},
+     "versionNumber": d["VERSION_NUMBER"], "latestVersion": d["LATEST_VERSION"],
+     "basicUdiDiDataUlid": d["BASIC_UDI"], "medicalPurpose": d["MEDICAL_PURPOSE"]}
+    for d in DEVICES
+]
+
+UI_PARAMS = ("tradeName", "deviceName", "manufacturerSrn", "primaryDi", "basicUdi",
+             "nomenclatureCode")
+
 TABLES = {"/udi": (DEVICES, config.UDI_PARAMS),
           "/actors": (ACTORS, config.ACTOR_PARAMS),
           "/reference": (REFERENCE, config.REFERENCE_PARAMS)}
@@ -142,10 +159,41 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status, message):
         self._send(status, json.dumps({"Error": message}))
 
+    def _ui_devices(self, path, params):
+        """The web-UI backend: substring matching, paginated envelope."""
+        tail = path[len("/devices/udiDiData"):].strip("/")
+        if tail:
+            match = [d for d in UI_DEVICES if d["uuid"] == tail]
+            if not match:
+                self._error(404, f"no device {tail}")
+                return
+            detail = dict(match[0])
+            detail["cndNomenclatures"] = [
+                {"code": "Z12010203",
+                 "description": {"texts": [{"text": "medical software"}]}}]
+            self._send(200, json.dumps(detail))
+            return
+
+        rows = UI_DEVICES
+        for name, values in params.items():
+            if name in ("page", "pageSize", "size", "languageIso2Code", "iso2Code"):
+                continue
+            if name not in UI_PARAMS:
+                self._error(400, f"Unknown parameter {name}")
+                return
+            needle = (values[0] or "").lower()
+            rows = [r for r in rows if needle in str(r.get(name, "")).lower()]
+        self._send(200, json.dumps(_ui_page(rows, params)))
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = re.sub(r"^/eudamed", "", parsed.path) or "/"
         params = parse_qs(parsed.query, keep_blank_values=True)
+
+        # The web-UI backend lives on its own paths and needs no key or format.
+        if path.startswith("/devices/udiDiData"):
+            self._ui_devices(path, params)
+            return
 
         if self.require_key:
             key = (self.headers.get(config.KEY_HEADER)
@@ -180,6 +228,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, buf.getvalue(), "text/csv")
         else:
             self._send(200, json.dumps(rows))
+
+
+def _ui_page(rows, params):
+    page = int((params.get("page") or ["0"])[0])
+    size = max(1, int((params.get("pageSize") or ["100"])[0]))
+    start = page * size
+    chunk = rows[start:start + size]
+    return {"content": chunk, "totalElements": len(rows), "page": page,
+            "last": start + size >= len(rows)}
 
 
 def serve(port=8099, host="127.0.0.1", require_key=True, verbose=False,

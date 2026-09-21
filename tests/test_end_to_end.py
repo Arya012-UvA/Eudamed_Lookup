@@ -1,5 +1,9 @@
 """End-to-end over a real socket against the bundled fake API.
 
+These cover the documented datalake backend, so every search pins
+--backend datalake; the name-driven commands default to the web-UI backend,
+which has its own test module.
+
 These exercise the whole stack - argparse, HTTP, parsing, scoring, writers -
 with no mocking below the CLI entry point.
 """
@@ -11,10 +15,14 @@ import pytest
 
 from eudamed.cli import EXIT_AUTH, EXIT_OK, EXIT_USAGE, main
 
+#: These tests target the documented datalake API. The name-driven commands
+#: default to the web-UI backend, so it is pinned explicitly here.
+DL = ("--backend", "datalake")
+
 
 def test_search_single_device(live_server, tmp_path, capsys):
     out = tmp_path / "res"
-    code = main(["search", "--base", live_server, "--key", "dummy",
+    code = main(["search", *DL, "--base", live_server, "--key", "dummy",
                  "--trade-name", "MindDoc", "--country", "DE",
                  "--out", str(out), "--delay", "0"])
     assert code == EXIT_OK
@@ -30,7 +38,7 @@ def test_search_single_device(live_server, tmp_path, capsys):
 
 def test_search_resolves_reference_codes(live_server, tmp_path):
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
+    main(["search", *DL, "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
           "--out", str(out), "--delay", "0"])
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
     assert best["risk_class"] == "Class IIa"        # RISK_CLASS_ID=2 via /reference
@@ -38,7 +46,7 @@ def test_search_resolves_reference_codes(live_server, tmp_path):
 
 def test_no_resolve_codes_leaves_numeric_ids(live_server, tmp_path):
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
+    main(["search", *DL, "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
           "--out", str(out), "--delay", "0", "--no-resolve-codes"])
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
     assert best["risk_class"] == ""                 # unresolved, id still available
@@ -47,7 +55,7 @@ def test_no_resolve_codes_leaves_numeric_ids(live_server, tmp_path):
 
 def test_search_from_csv_writes_all_outputs(live_server, tmp_path, devices_csv):
     out = tmp_path / "res"
-    assert main(["search", "--base", live_server, "--key", "dummy",
+    assert main(["search", *DL, "--base", live_server, "--key", "dummy",
                  "--input", devices_csv, "--out", str(out), "--delay", "0"]) == EXIT_OK
     results = json.loads((out / "results.json").read_text())["results"]
     assert [r["status"] for r in results] == ["found", "found", "not found"]
@@ -63,7 +71,7 @@ def test_manufacturer_sibling_is_a_lead_not_a_match(live_server, tmp_path):
     csv_path.write_text("name,country,keys,broad\nMindDoc,DE,MindDoc,DE-MF-000025123\n",
                         encoding="utf-8")
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy", "--input", str(csv_path),
+    main(["search", *DL, "--base", live_server, "--key", "dummy", "--input", str(csv_path),
           "--out", str(out), "--fields", "TRADE_NAME,MF_SRN", "--delay", "0"])
     cands = json.loads((out / "results.json").read_text())["results"][0]["candidates"]
     by_name = {c["trade_name"]: c for c in cands}
@@ -75,7 +83,7 @@ def test_manufacturer_sibling_is_a_lead_not_a_match(live_server, tmp_path):
 
 def test_csv_response_format_works_end_to_end(live_server, tmp_path):
     out = tmp_path / "res"
-    assert main(["search", "--base", live_server, "--key", "dummy", "--format", "csv",
+    assert main(["search", *DL, "--base", live_server, "--key", "dummy", "--format", "csv",
                  "--trade-name", "MindDoc", "--out", str(out), "--delay", "0"]) == EXIT_OK
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
     assert best["trade_name"] == "MindDoc"
@@ -84,7 +92,7 @@ def test_csv_response_format_works_end_to_end(live_server, tmp_path):
 def test_device_name_field_search(live_server, tmp_path):
     """DEVICE_NAME is filterable, but exactly - the whole string is compared."""
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy",
+    main(["search", *DL, "--base", live_server, "--key", "dummy",
           "--trade-name", "MindDoc depression therapy software",
           "--out", str(out), "--fields", "DEVICE_NAME", "--delay", "0"])
     result = json.loads((out / "results.json").read_text())["results"][0]
@@ -98,7 +106,7 @@ def test_filters_are_exact_not_substring(live_server, tmp_path):
     does not match "MindDoc depression therapy software".
     """
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "depression",
+    main(["search", *DL, "--base", live_server, "--key", "dummy", "--trade-name", "depression",
           "--out", str(out), "--fields", "DEVICE_NAME", "--delay", "0"])
     result = json.loads((out / "results.json").read_text())["results"][0]
     assert result["total_matches"] == 0
@@ -107,7 +115,7 @@ def test_filters_are_exact_not_substring(live_server, tmp_path):
 
 def test_filters_are_case_insensitive(live_server, tmp_path):
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MINDDOC",
+    main(["search", *DL, "--base", live_server, "--key", "dummy", "--trade-name", "MINDDOC",
           "--out", str(out), "--delay", "0"])
     result = json.loads((out / "results.json").read_text())["results"][0]
     assert result["candidates"][0]["trade_name"] == "MindDoc"
@@ -116,7 +124,7 @@ def test_filters_are_case_insensitive(live_server, tmp_path):
 def test_require_key_exits_auth_without_requests(live_server, tmp_path, monkeypatch, capsys):
     """--require-key opts back in to the strict check."""
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    code = main(["search", "--base", live_server, "--require-key",
+    code = main(["search", *DL, "--base", live_server, "--require-key",
                  "--trade-name", "MindDoc", "--out", str(tmp_path / "res")])
     assert code == EXIT_AUTH
     assert "--require-key" in capsys.readouterr().err
@@ -125,7 +133,7 @@ def test_require_key_exits_auth_without_requests(live_server, tmp_path, monkeypa
 def test_bad_key_is_reported_as_auth(live_server, tmp_path, monkeypatch):
     """The fake server rejects a blank key the way APIM does."""
     monkeypatch.setenv("EUDAMED_SUBSCRIPTION_KEY", "")
-    code = main(["search", "--base", live_server, "--key", "", "--trade-name", "MindDoc",
+    code = main(["search", *DL, "--base", live_server, "--key", "", "--trade-name", "MindDoc",
                  "--out", str(tmp_path / "res")])
     assert code == EXIT_AUTH
 
@@ -164,7 +172,7 @@ def test_reference_command(live_server, capsys):
 
 
 def test_dry_run_makes_no_requests(capsys):
-    assert main(["search", "--trade-name", "MindDoc", "--dry-run"]) == EXIT_OK
+    assert main(["search", *DL, "--trade-name", "MindDoc", "--dry-run"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "api.datalake.sante.service.ec.europa.eu" in out
     assert "TRADE_NAME=MindDoc" in out and "format=json" in out and "api-version=v1.0" in out
@@ -172,7 +180,7 @@ def test_dry_run_makes_no_requests(capsys):
 
 def test_dry_run_needs_no_key(monkeypatch, capsys):
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    assert main(["search", "--trade-name", "X", "--dry-run"]) == EXIT_OK
+    assert main(["search", *DL, "--trade-name", "X", "--dry-run"]) == EXIT_OK
 
 
 @pytest.mark.parametrize("argv", [
@@ -186,12 +194,12 @@ def test_usage_errors(argv, capsys):
 
 
 def test_unreadable_input_is_a_usage_error(tmp_path, capsys):
-    assert main(["search", "--input", str(tmp_path / "nope.csv")]) == EXIT_USAGE
+    assert main(["search", *DL, "--input", str(tmp_path / "nope.csv")]) == EXIT_USAGE
 
 
 def test_reference_labels_resolve_every_coded_field(live_server, tmp_path):
     out = tmp_path / "res"
-    main(["search", "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
+    main(["search", *DL, "--base", live_server, "--key", "dummy", "--trade-name", "MindDoc",
           "--out", str(out), "--delay", "0"])
     best = json.loads((out / "results.json").read_text())["results"][0]["candidates"][0]
     assert best["risk_class"] == "Class IIa"
@@ -338,7 +346,7 @@ def test_error_status_when_the_api_cannot_be_reached(tmp_path, capsys):
     csv_path.write_text("name,country,keys\nMindDoc,DE,MindDoc\n", encoding="utf-8")
     out = tmp_path / "res"
     # Port 9 (discard) with nothing bound: a refused connection.
-    code = main(["search", "--base", "http://127.0.0.1:9/eudamed", "--key", "dummy",
+    code = main(["search", *DL, "--base", "http://127.0.0.1:9/eudamed", "--key", "dummy",
                  "--input", str(csv_path), "--out", str(out),
                  "--delay", "0", "--retries", "1", "--timeout", "2",
                  "--no-resolve-codes"])
@@ -387,7 +395,7 @@ def test_running_without_a_key_is_the_default(live_server, tmp_path, monkeypatch
     tool must not refuse to run just because the spec declares a key."""
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
     out = tmp_path / "r"
-    code = main(["search", "--base", live_server, "--trade-name", "MindDoc",
+    code = main(["search", *DL, "--base", live_server, "--trade-name", "MindDoc",
                  "--out", str(out), "--delay", "0", "--retries", "1"])
     # The stand-in enforces a key, so this is a 401 - but the request was made.
     assert code == EXIT_AUTH
@@ -404,7 +412,7 @@ def test_anonymous_request_reports_the_verdict(
     is the informative outcome: a key really is needed.
     """
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    code = main(["search", "--base", live_server, "--trade-name", "MindDoc",
+    code = main(["search", *DL, "--base", live_server, "--trade-name", "MindDoc",
                  "--out", str(tmp_path / "r"), "--delay", "0", "--retries", "1",
                  "--no-resolve-codes"])
     assert code == EXIT_AUTH
@@ -426,7 +434,7 @@ def test_anonymous_request_succeeds_against_an_open_api(tmp_path, capsys, monkey
     host, port = server.server_address[:2]
     try:
         out = tmp_path / "r"
-        code = main(["search", "--base", f"http://{host}:{port}/eudamed",
+        code = main(["search", *DL, "--base", f"http://{host}:{port}/eudamed",
                      "--trade-name", "MindDoc", "--out", str(out),
                      "--delay", "0", "--retries", "1"])
         assert code == EXIT_OK
@@ -440,7 +448,7 @@ def test_anonymous_request_succeeds_against_an_open_api(tmp_path, capsys, monkey
 
 def test_anonymous_request_sends_no_credential(monkeypatch, capsys):
     monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
-    main(["search", "--trade-name", "MindDoc", "--dry-run"])
+    main(["search", *DL, "--trade-name", "MindDoc", "--dry-run"])
     url = capsys.readouterr().out
     assert "subscription-key" not in url and "TRADE_NAME=MindDoc" in url
 
@@ -707,7 +715,7 @@ def test_search_against_a_cache_matches_approximate_names(live_server, tmp_path)
     csv_path = tmp_path / "d.csv"
     csv_path.write_text("name,country,keys\nMind Doc,DE,Mind Doc\n", encoding="utf-8")
     out = tmp_path / "r"
-    assert main(["search", "--base", live_server, "--input", str(csv_path),
+    assert main(["search", *DL, "--base", live_server, "--input", str(csv_path),
                  "--cache", str(cache), "--out", str(out), "--delay", "0",
                  "--retries", "1"]) == EXIT_OK
     result = json.loads((out / "results.json").read_text())["results"][0]
@@ -725,7 +733,7 @@ def test_cache_mode_records_that_it_used_no_requests(live_server, tmp_path):
     out = tmp_path / "r"
     csv_path = tmp_path / "d.csv"
     csv_path.write_text("name,keys\nKalmeda,Kalmeda\n", encoding="utf-8")
-    main(["search", "--base", live_server, "--input", str(csv_path), "--cache", str(cache),
+    main(["search", *DL, "--base", live_server, "--input", str(csv_path), "--cache", str(cache),
           "--out", str(out), "--delay", "0", "--retries", "1", "--no-resolve-codes"])
     meta = json.loads((out / "results.json").read_text())["meta"]
     assert meta["requests"] == 0 and meta["cached_rows"] >= 1
@@ -736,7 +744,7 @@ def test_search_reports_an_unreadable_cache(tmp_path, capsys):
     bad.write_text("not json\n", encoding="utf-8")
     csv_path = tmp_path / "d.csv"
     csv_path.write_text("name\nX\n", encoding="utf-8")
-    assert main(["search", "--input", str(csv_path), "--cache", str(bad),
+    assert main(["search", *DL, "--input", str(csv_path), "--cache", str(bad),
                  "--out", str(tmp_path / "r")]) == EXIT_USAGE
     assert "cannot read --cache" in capsys.readouterr().err
 
