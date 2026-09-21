@@ -10,6 +10,7 @@ CSV_FIELDS = [
     "name", "ca", "expected_country", "status", "score", "matched_on", "matched_via",
     "trade_name", "device_name", "manufacturer_name", "mf_srn", "manufacturer_country",
     "risk_class", "legislation", "device_status", "placed_on_market", "special_type",
+    "device_kind", "device_kind_reason",
     "primary_di", "basic_udi", "nomenclature_code", "medical_purpose",
     "candidates", "total_matches", "errors", "link",
 ]
@@ -73,6 +74,8 @@ MD_SECTIONS = [
         ("Risk class", "risk_class"), ("Applicable legislation", "legislation"),
         ("Special device type", "special_type"),
         ("EMDN / nomenclature code", "nomenclature_code"),
+        ("Device type (derived)", "device_kind"),
+        ("Device type evidence", "device_kind_reason"),
         ("Intended medical purpose", "medical_purpose"),
     ]),
     ("Status and market", [
@@ -90,6 +93,17 @@ MD_SECTIONS = [
         ("Found via", "matched_via"), ("EUDAMED link", "link"),
     ]),
 ]
+
+
+#: The derived device type is on every row, so it would make the
+#: Classification section print for a row that has no classification at all.
+#: An "unknown" kind states only that two fields were blank, which the blank
+#: fields already say, so it is omitted rather than padded out.
+_KIND_KEYS = ("device_kind", "device_kind_reason")
+
+
+def _is_undetermined_kind(candidate, key):
+    return key in _KIND_KEYS and candidate.get("device_kind") == "unknown"
 
 
 def _md_escape(value):
@@ -112,6 +126,10 @@ def write_markdown(results, path, meta=None):
     add(f"- Requests issued: {meta.get('requests', '?')}")
     if meta.get("widen_requests"):
         add(f"- Substring-fallback requests: {meta['widen_requests']}")
+    if meta.get("software_only"):
+        add("- Device-type filter: **software only** \u2014 candidates whose record does "
+            "not say software (EMDN category Z12, or a special device type naming "
+            "software) were dropped, including those whose record says nothing either way")
     add("")
     add("> Scores rank candidates; they do not confirm registration. Verify every")
     add("> match through its EUDAMED link before relying on it.")
@@ -165,7 +183,16 @@ def write_markdown(results, path, meta=None):
             add("")
             continue
 
-        if not r["candidates"]:
+        dropped = sum((r.get("dropped_kinds") or {}).values())
+        if not r["candidates"] and dropped:
+            kinds = r["dropped_kinds"]
+            add(f"**Found, then filtered out.** {dropped} candidate(s) matched the name "
+                "but were dropped by the software-only filter: "
+                f"{kinds.get('other', 0)} whose record says they are not software, and "
+                f"{kinds.get('unknown', 0)} whose record says nothing either way. This is "
+                "not an absence from the register.")
+            add("")
+        elif not r["candidates"]:
             add("No candidate scored above the minimum. This is not proof of absence:")
             add("the device may be registered under a different trade name, or the")
             add("filter may not match the way the term was typed.")
@@ -181,7 +208,8 @@ def write_markdown(results, path, meta=None):
                 add("")
             for section, fields in MD_SECTIONS:
                 rows = [(lbl, cand.get(key)) for lbl, key in fields
-                        if cand.get(key) not in (None, "", [])]
+                        if cand.get(key) not in (None, "", [])
+                        and not _is_undetermined_kind(cand, key)]
                 if not rows:
                     continue
                 add(f"**{section}**")
@@ -342,7 +370,9 @@ const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Mode
 ["Placed on market","placed_on_market"],
 ["Special type","special_type"],["UDI-DI","primary_di"],["Basic UDI-DI","basic_udi"],
 ["EMDN / nomenclature","nomenclature_code"],["Medical purpose","medical_purpose"],
-["Reference","reference"],["Version","version"],["Score","score"],["Evidence","matched_on"],
+["Reference","reference"],["Version","version"],["Device type","device_kind"],
+["Device type evidence","device_kind_reason"],
+["Score","score"],["Evidence","matched_on"],
 ["Found via","matched_via"]];
 function chip(c){
   const m = c.matched_on || "none";

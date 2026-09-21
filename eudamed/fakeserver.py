@@ -77,6 +77,29 @@ DEVICES = [
      "MF_NAME": "Vitadio s.r.o.", "MEDICAL_PURPOSE": "Type 2 diabetes therapy",
      "UUID": "44444444-4444-4444-4444-444444444444", "LATEST_VERSION": True,
      "VERSION_NUMBER": 1},
+    # Hardware whose trade name contains "sleep" and "mind": exactly the noise
+    # a word-based sweep for psychological software pulls in, and what
+    # --software-only exists to remove. Its EMDN code is outside Z12.
+    {"PRIMARY_DI": "04012345000019", "BASIC_UDI": "401234500SLEEPPAD",
+     "TRADE_NAME": "SleepMind Positioning Cushion", "DEVICE_NAME": "Positioning cushion",
+     "DEVICE_MODEL": "L", "REFERENCE": "SC-1", "NOMENCLATURE_CODE": "Y120304",
+     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": 1, "DEVICE_STATUS_TYPE_ID": 1, "MF_SRN": "DE-MF-000044001",
+     "MF_NAME": "Schlafkomfort GmbH", "MEDICAL_PURPOSE": "Patient positioning",
+     "UUID": "66666666-6666-6666-6666-666666666666", "LATEST_VERSION": True,
+     "VERSION_NUMBER": 1},
+    # Neither an EMDN code nor a special device type: the record says nothing,
+    # so its kind is "unknown" and --software-only must not silently claim it
+    # is hardware.
+    {"PRIMARY_DI": "04012345000026", "BASIC_UDI": "401234500MINDLESS",
+     "TRADE_NAME": "Mindful Monitor", "DEVICE_NAME": "Mindful Monitor",
+     "DEVICE_MODEL": "", "REFERENCE": "MM-1", "NOMENCLATURE_CODE": "",
+     "RISK_CLASS_ID": 1, "APPLICABLE_LEGISLATION_ID": 1, "PLACED_ON_THE_MARKET_ID": 1,
+     "SPECIAL_DEVICE_TYPE_ID": "", "DEVICE_STATUS_TYPE_ID": 1,
+     "MF_SRN": "DE-MF-000044001",
+     "MF_NAME": "Schlafkomfort GmbH", "MEDICAL_PURPOSE": "Monitoring",
+     "UUID": "77777777-7777-7777-7777-777777777777", "LATEST_VERSION": True,
+     "VERSION_NUMBER": 1},
 ]
 
 ACTORS = [
@@ -86,6 +109,20 @@ ACTORS = [
     {"ACTOR_ID": "DE-MF-000099001", "NAME": "mynoise GmbH", "ABBREVIATED_NAME": "mynoise",
      "ACTOR_TYPE": "MANUFACTURER", "ACT_COUNTRY_ISO2_CODE": "DE",
      "CA_NAME": "BfArM", "CA_ACTOR_ID": "DE-CA-001"},
+    # A registered name that shares no exact string with the product name, so
+    # the exact /actors filter cannot reach it from "PINK" - the case the
+    # substring fallback exists for.
+    {"ACTOR_ID": "DE-MF-000031007", "NAME": "PINK gegen Brustkrebs GmbH",
+     "ABBREVIATED_NAME": "PINK", "ACTOR_TYPE": "MANUFACTURER",
+     "ACT_COUNTRY_ISO2_CODE": "DE", "CA_NAME": "BfArM", "CA_ACTOR_ID": "DE-CA-001"},
+    {"ACTOR_ID": "CZ-MF-000077001", "NAME": "Vitadio s.r.o.",
+     "ABBREVIATED_NAME": "Vitadio", "ACTOR_TYPE": "MANUFACTURER",
+     "ACT_COUNTRY_ISO2_CODE": "CZ", "CA_NAME": "SUKL", "CA_ACTOR_ID": "CZ-CA-001"},
+    # Registers one non-software device and one the record says nothing about,
+    # so a manufacturer search with --software-only has something to drop.
+    {"ACTOR_ID": "DE-MF-000044001", "NAME": "Schlafkomfort GmbH",
+     "ABBREVIATED_NAME": "Schlafkomfort", "ACTOR_TYPE": "MANUFACTURER",
+     "ACT_COUNTRY_ISO2_CODE": "DE", "CA_NAME": "BfArM", "CA_ACTOR_ID": "DE-CA-001"},
 ]
 
 REFERENCE = [
@@ -126,8 +163,22 @@ UI_DEVICES = [
     for d in DEVICES
 ]
 
+#: The nomenclature code the web-UI backend only exposes on the per-device
+#: DETAIL record - its list rows carry none, which is why a device-type filter
+#: has to fetch the detail. Keyed by uuid.
+UI_DETAIL_CODES = {d["UUID"]: d["NOMENCLATURE_CODE"] for d in DEVICES}
+
+UI_ACTORS = [
+    {"uuid": a["ACTOR_ID"], "srn": a["ACTOR_ID"], "name": a["NAME"],
+     "abbreviatedName": a["ABBREVIATED_NAME"], "actorType": a["ACTOR_TYPE"],
+     "countryIso2Code": a["ACT_COUNTRY_ISO2_CODE"], "caName": a["CA_NAME"]}
+    for a in ACTORS
+]
+
 UI_PARAMS = ("tradeName", "deviceName", "manufacturerSrn", "primaryDi", "basicUdi",
              "nomenclatureCode")
+
+UI_ACTOR_PARAMS = ("name", "srn", "actorType", "countryIso2Code")
 
 TABLES = {"/udi": (DEVICES, config.UDI_PARAMS),
           "/actors": (ACTORS, config.ACTOR_PARAMS),
@@ -176,6 +227,28 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status, message):
         self._send(status, json.dumps({"Error": message}))
 
+    def _ui_filter(self, rows, params, allowed):
+        """Substring-match the UI backend's camelCase parameters.
+
+        Returns None after sending a 400, so the caller stops.
+        """
+        for name, values in params.items():
+            if name in ("page", "pageSize", "size", "languageIso2Code", "iso2Code"):
+                continue
+            if name not in allowed:
+                self._error(400, f"Unknown parameter {name}")
+                return None
+            needle = (values[0] or "").lower()
+            rows = [r for r in rows if needle in str(r.get(name, "")).lower()]
+        return rows
+
+    def _ui_actors(self, params):
+        """The web-UI actor search: substring matching, paginated envelope."""
+        rows = self._ui_filter(UI_ACTORS, params, UI_ACTOR_PARAMS)
+        if rows is None:
+            return
+        self._send(200, json.dumps(_ui_page(rows, params)))
+
     def _ui_devices(self, path, params):
         """The web-UI backend: substring matching, paginated envelope."""
         tail = path[len("/devices/udiDiData"):].strip("/")
@@ -185,21 +258,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(404, f"no device {tail}")
                 return
             detail = dict(match[0])
-            detail["cndNomenclatures"] = [
-                {"code": "Z12010203",
-                 "description": {"texts": [{"text": "medical software"}]}}]
+            code = UI_DETAIL_CODES.get(tail, "")
+            # A device with no code has an empty list, not a fabricated one:
+            # the filter must then leave it undetermined.
+            detail["cndNomenclatures"] = (
+                [{"code": code, "description": {"texts": [{"text": "nomenclature"}]}}]
+                if code else [])
             self._send(200, json.dumps(detail))
             return
 
-        rows = UI_DEVICES
-        for name, values in params.items():
-            if name in ("page", "pageSize", "size", "languageIso2Code", "iso2Code"):
-                continue
-            if name not in UI_PARAMS:
-                self._error(400, f"Unknown parameter {name}")
-                return
-            needle = (values[0] or "").lower()
-            rows = [r for r in rows if needle in str(r.get(name, "")).lower()]
+        rows = self._ui_filter(UI_DEVICES, params, UI_PARAMS)
+        if rows is None:
+            return
         self._send(200, json.dumps(_ui_page(rows, params)))
 
     def do_GET(self):
@@ -210,6 +280,9 @@ class Handler(BaseHTTPRequestHandler):
         # The web-UI backend lives on its own paths and needs no key or format.
         if path.startswith("/devices/udiDiData"):
             self._ui_devices(path, params)
+            return
+        if path == "/actors/actorDataPublicView":
+            self._ui_actors(params)
             return
 
         if self.require_key:
@@ -280,6 +353,8 @@ def main(argv=None):
     base = f"http://{args.host}:{args.port}/eudamed"
     print(f"Fake EUDAMED Public API on {base}")
     print(f"  {len(DEVICES)} devices, {len(ACTORS)} actors, {len(REFERENCE)} reference codes")
+    print("  web-UI backend routes: /devices/udiDiData, /actors/actorDataPublicView "
+          "(substring, paginated)")
     mode = ("substring (NOT how the real API behaves)" if args.substring
             else "exact, case-insensitive (as the real API)")
     print(f"  filter matching: {mode}")

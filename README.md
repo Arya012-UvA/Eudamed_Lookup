@@ -72,6 +72,10 @@ If a request does fail, distinguish the cause:
 
 ## Commands
 
+`probe` first, then `search` for names you have, `manufacturer` for a company's
+whole catalogue, and `discover` or the substring sweep for devices you cannot
+name. `serve` puts the first three in a browser.
+
 ### `probe` — run this first
 
 The OpenAPI document declares **no response schemas** (every `200` is
@@ -94,6 +98,10 @@ A search box where you can check **any** name, one at a time, without preparing
 a CSV. The subscription key stays in this process and is never sent to the
 browser, which also sidesteps the CORS restrictions that block calling the API
 directly from a page.
+
+Three panels, matching the commands below: the name search at the top,
+**Search by manufacturer** (name → SRN → devices), and **Discover by filter**.
+The `Software only` option under *Options* applies to all three.
 
 ```bash
 python3 -m eudamed serve --input devices.csv
@@ -210,10 +218,118 @@ Two caveats worth keeping:
   discover names, then confirm each one against the documented API with a
   normal `search`.
 
-For a *complete* list of German prescribable digital health apps, the DiGA
-directory at <https://diga.bfarm.de> is the authoritative upstream and a better
-starting point than reverse-engineering EUDAMED — this repo's `devices.csv` is
-evidently derived from it.
+A word-based sweep is the weakest of the three discovery routes, because it
+filters on *wording*. Prefer `--software-only` (below) with it, and prefer the
+DiGA seed list to guessing stems at all.
+
+### `diga-seed.csv` — the DiGA directory as a seed list
+
+Guessing substrings is a poor way to enumerate therapy apps. A better starting
+point already exists: BfArM's **DiGA-Verzeichnis** at <https://diga.bfarm.de>
+lists the digital health applications German statutory insurance reimburses,
+and a DiGA must be a CE-marked class I or IIa medical device — so every entry
+should be in EUDAMED. Twenty-four of the forty-seven rows are psychological or
+psycho-oncological.
+
+`diga-seed.csv` ships those names in the same shape as `devices.csv`, so it
+feeds straight into the same pipeline:
+
+```bash
+python3 -m eudamed search --input diga-seed.csv --software-only \
+    --out diga --delay 0.3
+```
+
+Each row carries the exact registered spelling in `keys` (umlauts included)
+plus shorter variants, and the manufacturer or a product stem in `broad`, which
+is what the substring fallback probes when exact matching finds nothing.
+
+Budget for it: 47 rows with variant spellings, two name columns and the
+fallback comes to roughly 230 requests, so about a minute at the default
+`--delay 0.2`.
+
+**Read [`diga-seed.NOTES.md`](diga-seed.NOTES.md) before quoting the file.**
+The names were compiled from the model's own knowledge, not fetched from BfArM
+— this sandbox blocks every EU host — so some may be misspelled, superseded or
+delisted, and the list is not complete. A wrong name is cheap (that row just
+reports *not found*), but do not cite the file as evidence that something is or
+is not a DiGA. The notes explain how to refresh it from the directory.
+
+### `--software-only` — filter by device type, not by wording
+
+A name search is blunt: `mind`, `coach` and `sleep` appear in the trade names
+of cushions, braces and monitors as readily as in those of therapy apps. This
+option throws out candidates whose **own record** does not say they are
+software, which removes hardware regardless of what you searched for:
+
+```bash
+python3 -m eudamed search --input psych-discovery.csv --backend ui \
+    --fields TRADE_NAME --top 50 --software-only --out psych-discovery
+```
+
+It works off two fields that are already fetched on every row:
+
+| Field | What it contributes |
+| --- | --- |
+| `NOMENCLATURE_CODE` (EMDN) | Category **Z12** is medical device software. This is the signal that actually fires. |
+| `SPECIAL_DEVICE_TYPE` | Settles it when it names software — but it is usually `None` for software, because in EUDAMED it flags a handful of special cases rather than classifying every device. So it can confirm software and never rules it out. |
+
+Classification is **three-valued**, not two:
+
+- **software** — one of the two fields says so.
+- **other** — the EMDN code sits outside the software category, or the special
+  device type names something physical.
+- **unknown** — both fields are blank. That is not evidence either way, so it
+  gets its own bucket rather than being guessed into one of the others.
+
+`--software-only` drops `other` *and* `unknown` — you asked for software — but
+it reports the two counts separately, so a sparsely populated field shows up as
+a large "says nothing either way" number instead of a quietly shorter result.
+Every row also carries `device_kind` and `device_kind_reason` in the JSON, CSV
+and Markdown output whether or not you filter, so you can see the call and the
+field it rests on.
+
+Two things worth knowing:
+
+- **On `--backend ui` the filter needs an extra request per device.** The
+  web-UI backend's list rows carry no EMDN code at all — it lives on the
+  per-device detail record. So an undetermined device triggers one detail
+  lookup, cached per device for the run. Without that, every row on that
+  backend would be undetermined and the filter would empty the result.
+- **A filtered-out device is not an unregistered one.** The report says
+  *"Found, then filtered out"* with the counts, and the browser verdict reads
+  **filtered out** rather than *not found*. The distinction matters as much as
+  the `error` / `not found` one.
+
+### `manufacturer` — every device one company registered
+
+`/udi` has no manufacturer-*name* filter. It only has `MF_SRN`, the actor's
+registration number, so finding a company's devices is a two-step lookup:
+`/actors?NAME=` to resolve the name to SRNs, then `/udi?MF_SRN=` per SRN.
+That is what this command does:
+
+```bash
+# by name
+python3 -m eudamed manufacturer --name "GAIA AG"
+
+# when you already know the SRN, skipping the actor lookup
+python3 -m eudamed manufacturer --srn DE-MF-000025123
+
+# only their software
+python3 -m eudamed manufacturer --name "GAIA AG" --software-only
+```
+
+On the documented API step 1 is an **exact whole-string match on the company's
+registered name**, like every other free-text filter. "HelloBetter" will not
+find "GET.ON Institut für Online Gesundheitstrainings GmbH". So when the exact
+lookup returns no actor, the substring fallback is tried for the *actor* search
+too — the same mechanism the name search uses, and more useful here, because
+registered company names are long and rarely what you would type. An actor
+reached that way is marked `via substring search`.
+
+Devices found this way score 1.0 with evidence `identifier:MF_SRN:<srn>`: the
+API matched the registration number, so there is nothing to score for name
+similarity. This is also the route to take when a device search comes back
+empty — look up the manufacturer, then read their device list.
 
 ### `filtertest` — how does `/udi` filtering actually behave?
 
@@ -306,6 +422,7 @@ MindDoc,Software for psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-00002512
 | `--dry-run` | off | Print the URLs that would be requested, then exit. Needs no key |
 | `--delay` | `0.2` | Minimum seconds between requests |
 | `--retries` | `4` | Attempts per request, with exponential backoff |
+| `--software-only` | off | Keep only candidates whose record says software. See above |
 | `--keep-raw` | off | Include each raw API row in `results.json` |
 | `-v` | off | Log every request |
 
@@ -382,7 +499,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 254 tests
+pytest -q          # 329 tests
 ruff check eudamed tests
 ```
 
@@ -519,6 +636,10 @@ Every fallback hit is tagged **`matched_via: ui-substring`** in the JSON, CSV
 and Markdown, and carries a `found via substring` chip plus a provenance note
 in the browser — so a hit from the undocumented backend is never mistaken for
 a confirmed exact match on the documented one.
+
+`manufacturer` uses the same fallback for its **actor** lookup, where it earns
+its keep even more: registered company names are long and almost never what you
+would type.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -658,16 +779,22 @@ eudamed/
   records.py      Device / Actor mapping   <- field-name spellings live here
   reference.py    /reference id -> code resolution, ambiguity-safe
   matching.py     normalisation and typed-evidence scoring
-  search.py       orchestration: targets -> ranked candidates
+  devicetype.py   is this row software? three-valued, with the detail lookup
+  search.py       orchestration: targets -> ranked candidates, manufacturer -> devices
   report.py       JSON / CSV / HTML writers
-  cli.py          argparse CLI: search, actors, reference, probe, serve,
-                  filtertest, discover, raw
+  cli.py          argparse CLI: search, manufacturer, actors, reference, probe,
+                  serve, filtertest, discover, raw
   ui_backend.py   the EUDAMED website's backend: substring search, paginated
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            254 tests, no network required
+tests/            329 tests, no network required
 docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
+
+devices.csv          the 23-device working list
+diga-seed.csv        DiGA directory as a seed list (see diga-seed.NOTES.md)
+psych-devices.csv    the mental-health subset of devices.csv
+psych-discovery.csv  16 substring stems for a blind sweep
 ```
 
 ## Legacy script

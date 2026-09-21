@@ -6,13 +6,13 @@ import os
 import sys
 import threading
 
-from . import config
+from . import config, devicetype
 from .client import ApiError, AuthError, Client
 from .fields import describe_keys
 from .records import Actor, Device
 from .reference import Reference
 from .report import write_all
-from .search import Target, load_targets, run
+from .search import Target, load_targets, manufacturer_results, run, search_manufacturer
 from .ui_backend import DEFAULT_UI_BASE, UiClient
 
 EXIT_OK, EXIT_ERROR, EXIT_AUTH, EXIT_USAGE = 0, 1, 2, 3
@@ -90,6 +90,25 @@ def make_widen_client(args):
                     max_pages=getattr(args, "widen_max_pages", 2))
 
 
+def make_typer(args, client, widen_client=None):
+    """The device-type classifier, with a detail client when one helps.
+
+    Only built when --software-only is in force, because resolving an
+    undetermined device costs one extra request. The web-UI backend's list
+    rows carry no nomenclature code, so on that backend the detail lookup is
+    what makes the filter work at all rather than classing everything as
+    undetermined.
+    """
+    if not getattr(args, "software_only", False):
+        return None
+    detail = None
+    for candidate in (client, widen_client):
+        if hasattr(candidate, "device_detail"):
+            detail = candidate
+            break
+    return devicetype.Typer(detail_client=detail, verbose=args.verbose)
+
+
 def require_key(client, args):
     """Whether to proceed without a subscription key.
 
@@ -164,17 +183,27 @@ def cmd_search(args):
     if widen_client is not None:
         log(f"  substring fallback ready ({widen_client.base}) for devices not found")
 
+    typer = make_typer(args, client, widen_client)
+    if typer is not None:
+        log("  --software-only: keeping devices whose record says software "
+            "(EMDN Z12, or a special device type naming software)")
+        if typer.detail_client is None:
+            log("    no detail endpoint on this backend, so a device with no EMDN code "
+                "on its row stays undetermined and is dropped")
+
     try:
         results = run(client, targets, reference=reference, top=args.top,
                       min_score=args.min_score, fields=args.fields,
                       keep_raw=args.keep_raw, progress=log,
-                      widen_client=widen_client)
+                      widen_client=widen_client,
+                      software_only=args.software_only, typer=typer)
     except AuthError as exc:
         log(str(exc))
         return EXIT_AUTH
 
     meta = {"base": client.base, "backend": args.backend,
             "widen_requests": widen_client.request_count if widen_client else 0,
+            "software_only": args.software_only,
             "fields": args.fields, "format": args.fmt,
             "requests": client.request_count, "api_version": args.api_version,
             "reference_loaded": bool(reference and reference.tables),
@@ -188,6 +217,19 @@ def cmd_search(args):
     for kind in ("json", "csv", "md", "html"):
         log(f"  {kind:4} {os.path.abspath(paths[kind])}")
 
+    if args.software_only:
+        other = sum(r.get("dropped_kinds", {}).get(devicetype.OTHER, 0) for r in results)
+        unknown = sum(r.get("dropped_kinds", {}).get(devicetype.UNKNOWN, 0) for r in results)
+        log("")
+        log(f"--software-only dropped {other} candidate(s) whose record says they are "
+            f"not software, and {unknown} whose record says nothing either way.")
+        if typer is not None and typer.detail_requests:
+            log(f"  {typer.detail_requests} detail request(s) resolved rows that carried "
+                f"no device type ({typer.detail_errors} failed)")
+        if unknown:
+            log("  A large 'nothing either way' count means the EMDN code and special "
+                "device type were both blank, not that those devices are hardware.")
+
     mfr = [r["name"] for r in results
            if any(c["matched_on"] == "manufacturer" for c in r["candidates"])]
     if mfr:
@@ -196,6 +238,99 @@ def cmd_search(args):
     unresolved = [r["name"] for r in results if r["errors"]]
     if unresolved:
         log(f"devices with request errors: {', '.join(unresolved)}")
+    return EXIT_OK
+
+
+# -------------------------------------------------------- manufacturer
+def cmd_manufacturer(args):
+    """Every device a named manufacturer has registered.
+
+    /udi cannot filter on a manufacturer *name* - only on MF_SRN - so the name
+    is resolved through /actors first. See search.search_manufacturer.
+    """
+    if not args.name and not args.srn:
+        log("give --name 'Company GmbH' or --srn DE-MF-000012345")
+        return EXIT_USAGE
+
+    client = make_client(args)
+    if not require_key(client, args):
+        return EXIT_AUTH
+
+    if args.dry_run:
+        if args.srn:
+            for srn in args.srn:
+                print(client.build_url(client.DEVICE_PATH, {"MF_SRN": srn}))
+        else:
+            print(client.build_url(client.ACTOR_PATH, {"NAME": args.name}))
+        return EXIT_OK
+
+    reference = None
+    if args.resolve_codes and client.HAS_REFERENCE:
+        log("loading reference codes")
+        reference = Reference(client, language=args.language, verbose=args.verbose).load()
+
+    # The exact /actors filter rarely matches a company's full registered
+    # name, so the substring backend is the useful path here - more so than
+    # for a device name.
+    actor_client = make_widen_client(args)
+    if actor_client is not None:
+        log(f"  substring fallback ready ({actor_client.base}) for the actor lookup")
+
+    typer = make_typer(args, client, actor_client)
+    try:
+        found = search_manufacturer(
+            client, args.name or "", reference=reference, actor_client=actor_client,
+            srns=args.srn, top=args.top, software_only=args.software_only,
+            keep_raw=args.keep_raw, typer=typer)
+    except AuthError as exc:
+        log(str(exc))
+        return EXIT_AUTH
+
+    if found["actors"]:
+        log("")
+        log(f"{len(found['actors'])} actor(s):")
+        for actor in found["actors"]:
+            via = " (via substring search)" if actor.get("matched_via") else ""
+            log(f"  {actor['actor_id'] or '(no SRN)'}  {actor['name']}  "
+                f"[{actor['actor_type'] or '?'} {actor['country']}]{via}", indent=True)
+    elif not args.srn:
+        log("")
+        log(f"no actor matched {args.name!r}.")
+        log("  /actors matches the name exactly on the documented API, so try the "
+            "full registered company name, or --backend ui for substring search.")
+
+    if not found["devices"]:
+        log("")
+        log("no devices found for that manufacturer.")
+        for err in found["errors"]:
+            log(f"  {err}", indent=True)
+        if args.software_only and sum(found["dropped_kinds"].values()):
+            log(f"  --software-only dropped {found['dropped_kinds']} - the manufacturer "
+                "does have registered devices, but none the record calls software.")
+        return EXIT_OK
+
+    results = manufacturer_results(found)
+    meta = {"base": client.base, "backend": args.backend,
+            "fields": f"NAME={args.name!r} -> MF_SRN={found['srns']}",
+            "software_only": args.software_only,
+            "format": args.fmt, "requests": client.request_count,
+            "api_version": args.api_version,
+            "reference_loaded": bool(reference and reference.tables),
+            "tool_version": __import__("eudamed").__version__}
+    paths = write_all(results, args.out, meta)
+
+    log("")
+    log(f"{found['device_count']} device(s) for {len(found['srns'])} SRN(s) "
+        f"in {client.request_count} request(s)")
+    for entry in found["devices"]:
+        log(f"  {entry['trade_name'] or entry['device_name']}  "
+            f"[{entry['device_kind']}]  {entry['primary_di']}", indent=True)
+    if args.software_only:
+        log(f"  --software-only dropped {found['dropped_kinds'][devicetype.OTHER]} "
+            f"non-software and {found['dropped_kinds'][devicetype.UNKNOWN]} "
+            "undetermined device(s)")
+    for kind in ("json", "csv", "md", "html"):
+        log(f"  {kind:4} {os.path.abspath(paths[kind])}")
     return EXIT_OK
 
 
@@ -488,9 +623,12 @@ def cmd_discover(args):
     if reference is None and args.resolve_codes:
         reference = Reference(client, language=args.language, verbose=args.verbose).load()
 
+    typer = make_typer(args, client)
+
     # Optional local keyword narrowing, for concepts the API cannot filter on.
     terms = [t.strip().lower() for t in (args.keyword or "").split(",") if t.strip()]
     kept, devices = [], []
+    kinds = {devicetype.OTHER: 0, devicetype.UNKNOWN: 0}
     for row in rows:
         device = Device(row)
         if reference is not None:
@@ -500,9 +638,17 @@ def cmd_discover(args):
             haystack = " ".join(str(v) for v in device.to_dict().values()).lower()
             if not any(t in haystack for t in terms):
                 continue
+        if args.software_only:
+            kind, _ = typer.classify(device) if typer else device.kind
+            if kind != devicetype.SOFTWARE:
+                kinds[kind] = kinds.get(kind, 0) + 1
+                continue
         kept.append(device)
     if terms:
         log(f"  {len(kept)} of {len(devices)} row(s) mention {terms}")
+    if args.software_only:
+        log(f"  --software-only dropped {kinds[devicetype.OTHER]} non-software row(s) "
+            f"and {kinds[devicetype.UNKNOWN]} row(s) with no device-type information")
 
     # Present each hit as its own single-candidate result, so the existing
     # writers produce the same report shape as a name search.
@@ -726,6 +872,10 @@ def build_parser():
                         help="rows per page (ui backend only)")
     search.add_argument("--max-pages", type=int, default=5,
                         help="pages to walk per query (ui backend only)")
+    search.add_argument("--software-only", action="store_true",
+                        help="keep only candidates whose own record says they are software "
+                             "(EMDN category Z12, or a special device type naming software). "
+                             "Removes hardware noise regardless of the search term")
     search.add_argument("--keep-raw", action="store_true",
                         help="include each raw API row in results.json")
     add_common(search)
@@ -811,8 +961,31 @@ def build_parser():
     dis.add_argument("--no-resolve-codes", dest="resolve_codes", action="store_false")
     dis.add_argument("--language", default="en")
     dis.add_argument("--keep-raw", action="store_true")
+    dis.add_argument("--software-only", action="store_true",
+                     help="keep only rows whose record says they are software")
     add_common(dis)
     dis.set_defaults(func=cmd_discover)
+
+    mfr = subs.add_parser(
+        "manufacturer",
+        help="every device registered by a manufacturer, found from its name")
+    mfr.add_argument("--name", help="manufacturer name, e.g. 'GAIA AG'")
+    mfr.add_argument("--srn", action="append", default=[], metavar="SRN",
+                     help="skip the /actors lookup and use this SRN directly; repeatable")
+    mfr.add_argument("--out", default="eudamed_manufacturer", help="output directory")
+    mfr.add_argument("--top", type=int, default=200, help="maximum devices to report")
+    mfr.add_argument("--software-only", action="store_true",
+                     help="keep only devices whose record says they are software")
+    mfr.add_argument("--no-widen", dest="widen", action="store_false",
+                     help="do not fall back to substring search when the exact "
+                          "/actors lookup finds no actor")
+    mfr.add_argument("--widen-base", default=None,
+                     help=f"base URL for the substring fallback (default {DEFAULT_UI_BASE})")
+    mfr.add_argument("--no-resolve-codes", dest="resolve_codes", action="store_false")
+    mfr.add_argument("--language", default="en")
+    mfr.add_argument("--keep-raw", action="store_true")
+    add_common(mfr)
+    mfr.set_defaults(func=cmd_manufacturer)
 
     return parser
 

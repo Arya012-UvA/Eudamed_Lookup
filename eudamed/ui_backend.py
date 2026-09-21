@@ -30,6 +30,10 @@ DEFAULT_UI_BASE = "https://ec.europa.eu/tools/eudamed/api"
 #: reported as errors by the API if wrong, rather than silently ignored.
 PARAM_MAP = {
     "TRADE_NAME": "tradeName",
+    # Actor name. Unproven, like most of this map; an unknown parameter is
+    # either rejected with a 400 or ignored, and an ignored filter would blow
+    # past MAX_PLAUSIBLE_TOTAL below rather than pass silently.
+    "NAME": "name",
     "DEVICE_NAME": "deviceName",
     "BASIC_UDI": "basicUdi",
     "PRIMARY_DI": "primaryDi",

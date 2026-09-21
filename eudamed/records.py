@@ -6,6 +6,7 @@ Everything else is a list of plausible spellings; the first populated one wins.
 The untouched source row is kept as .raw.
 """
 
+from . import devicetype
 from .fields import index_row, pick
 
 
@@ -74,6 +75,15 @@ class Device:
         self.implantable = pick(i, "IMPLANTABLE", "implantable", default=None)
 
     @property
+    def kind(self):
+        """('software' | 'other' | 'unknown', reason) per the record itself.
+
+        Derived, not a registry column, so it lives here rather than being
+        mapped from a field. See eudamed.devicetype for the reasoning.
+        """
+        return devicetype.classify(self)
+
+    @property
     def country(self):
         """Manufacturer country, inferred from the SRN prefix (e.g. DE-MF-...)."""
         return self.mf_srn[:2].upper() if len(self.mf_srn) >= 2 else ""
@@ -89,6 +99,7 @@ class Device:
         return ""
 
     def to_dict(self):
+        kind, reason = self.kind
         return {
             "trade_name": self.trade_name, "device_name": self.device_name,
             "device_model": self.device_model, "manufacturer_name": self.manufacturer_name,
@@ -102,6 +113,7 @@ class Device:
             "active": self.active,
             "medical_purpose": self.medical_purpose, "version": self.version,
             "latest_version": self.latest_version, "uuid": self.uuid, "link": self.link,
+            "device_kind": kind, "device_kind_reason": reason,
         }
 
     def identity(self):
@@ -114,6 +126,10 @@ class Device:
 
 class Actor:
     """One /actors row."""
+
+    #: Set to "ui-substring" when this actor was reached through the
+    #: undocumented substring backend rather than by an exact name match.
+    matched_via = ""
 
     def __init__(self, raw):
         self.raw = raw or {}
@@ -132,4 +148,5 @@ class Actor:
             "actor_id": self.actor_id, "name": self.name,
             "abbreviated_name": self.abbreviated_name, "actor_type": self.actor_type,
             "country": self.country, "ca_name": self.ca_name, "ca_actor_id": self.ca_actor_id,
+            "matched_via": self.matched_via,
         }

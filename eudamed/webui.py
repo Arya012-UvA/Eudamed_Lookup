@@ -20,13 +20,13 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config
+from . import config, devicetype
 from .client import ApiError, AuthError
 from .matching import FOUND, POSSIBLE
 from .records import Actor, Device
 from .reference import Reference
 from .report import safe_json, write_csv, write_markdown
-from .search import Target, search_target
+from .search import Target, search_manufacturer, search_target
 
 
 class UIServer(ThreadingHTTPServer):
@@ -46,6 +46,24 @@ class UIServer(ThreadingHTTPServer):
         self.targets_by_name = {t.name.lower(): t for t in self.targets}
         self._ref = None
         self._ref_lock = threading.Lock()
+
+    def detail_client(self):
+        """A client that can fetch a per-device detail record, if any.
+
+        Only the web-UI backend has one. It is what lets the device-type
+        filter classify a row whose list entry carries no EMDN code.
+        """
+        for candidate in (self.client, self.widen_client):
+            if hasattr(candidate, "device_detail"):
+                return candidate
+        return None
+
+    def typer(self, software_only):
+        """A fresh classifier per request, so its cache cannot grow unbounded."""
+        if not software_only:
+            return None
+        return devicetype.Typer(detail_client=self.detail_client(),
+                                verbose=self.verbose)
 
     def reference(self):
         """Load the reference table once, on first use."""
@@ -108,6 +126,9 @@ class Handler(BaseHTTPRequestHandler):
                     # consequence rather than letting it look like "not found".
                     "exact_match_filters": True,
                     "widen": self.server.widen_client is not None,
+                    # The web-UI backend's list rows carry no EMDN code, so the
+                    # device-type filter needs a detail endpoint to be useful.
+                    "has_detail": self.server.detail_client() is not None,
                 })
             elif parsed.path == "/api/devices":
                 self._json(200, {"devices": [t.to_dict() for t in self.server.targets]})
@@ -115,6 +136,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._search(query)
             elif parsed.path == "/api/actors":
                 self._actors(query)
+            elif parsed.path == "/api/manufacturer":
+                self._manufacturer(query)
             elif parsed.path == "/api/report":
                 self._report(query)
             elif parsed.path == "/api/discover":
@@ -164,12 +187,15 @@ class Handler(BaseHTTPRequestHandler):
                             keys=[name])
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
 
+        software_only = query.get("software_only") == "1"
         try:
             result = search_target(self.server.client, target, reference=reference,
                                    top=int(query.get("top") or 10),
                                    min_score=float(query.get("min_score") or 0.0),
                                    fields=",".join(chosen),
-                                   widen_client=self.server.widen_client)
+                                   widen_client=self.server.widen_client,
+                                   software_only=software_only,
+                                   typer=self.server.typer(software_only))
         except AuthError as exc:
             self._json(401, {"error": "auth", "detail": str(exc)})
             return
@@ -190,11 +216,14 @@ class Handler(BaseHTTPRequestHandler):
         if bad or not chosen:
             raise ValueError(f"not documented /udi parameter(s): {', '.join(bad) or fields}")
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
+        software_only = query.get("software_only") == "1"
         return search_target(self.server.client, target, reference=reference,
                              top=int(query.get("top") or 10),
                              min_score=float(query.get("min_score") or 0.0),
                              fields=",".join(chosen),
-                             widen_client=self.server.widen_client)
+                             widen_client=self.server.widen_client,
+                             software_only=software_only,
+                             typer=self.server.typer(software_only))
 
     def _report(self, query):
         """Re-run the search and return a downloadable report.
@@ -237,6 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         meta = {"generated": time.strftime("%Y-%m-%d %H:%M"),
                 "base": self.server.client.base,
                 "fields": (query.get("fields") or config.DEFAULT_SEARCH_FIELDS).upper(),
+                "software_only": query.get("software_only") == "1",
                 "requests": self.server.client.request_count}
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,6 +323,9 @@ class Handler(BaseHTTPRequestHandler):
 
         reference = self.server.reference() if query.get("codes", "1") != "0" else None
         terms = [t.strip().lower() for t in (query.get("keyword") or "").split(",") if t.strip()]
+        software_only = query.get("software_only") == "1"
+        typer = self.server.typer(software_only)
+        dropped = {devicetype.OTHER: 0, devicetype.UNKNOWN: 0}
         devices = []
         for row in rows:
             device = Device(row)
@@ -303,17 +336,51 @@ class Handler(BaseHTTPRequestHandler):
                 hay = " ".join(str(v) for v in entry.values()).lower()
                 if not any(t in hay for t in terms):
                     continue
+            if software_only:
+                kind, reason = typer.classify(device)
+                entry["device_kind"], entry["device_kind_reason"] = kind, reason
+                if kind != devicetype.SOFTWARE:
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                    continue
             entry["score"] = 1.0
             entry["matched_on"] = "filter:" + ",".join(sorted(params))
             devices.append(entry)
 
         self._json(200, {
             "filters": params, "keyword": terms,
+            "software_only": software_only, "dropped_kinds": dropped,
             "rows_returned": len(rows), "kept": len(devices),
             # Exactly 1000 rows is the server cap, so the result is truncated.
             "truncated": len(rows) == 1000,
             "bytes": len(body), "devices": devices[:int(query.get("top") or 200)],
         })
+
+    def _manufacturer(self, query):
+        """Every device a named manufacturer registered.
+
+        /udi has no manufacturer-name filter, so the name is resolved to SRNs
+        through /actors first. See search.search_manufacturer.
+        """
+        name = (query.get("name") or "").strip()
+        srns = [s for s in (query.get("srn") or "").split(",") if s.strip()]
+        if not name and not srns:
+            self._json(400, {"error": "give a manufacturer name, or srn=<SRN>"})
+            return
+        reference = self.server.reference() if query.get("codes", "1") != "0" else None
+        software_only = query.get("software_only") == "1"
+        try:
+            found = search_manufacturer(
+                self.server.client, name, reference=reference,
+                actor_client=self.server.widen_client, srns=srns,
+                top=int(query.get("top") or 200), software_only=software_only,
+                typer=self.server.typer(software_only))
+        except AuthError as exc:
+            self._json(401, {"error": "auth", "detail": str(exc)})
+            return
+        except (ApiError, ValueError) as exc:
+            self._json(502, {"error": "api", "detail": str(exc)})
+            return
+        self._json(200, found)
 
     def _actors(self, query):
         name = (query.get("name") or "").strip()
@@ -499,6 +566,13 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
       style="width:5em"></label>
     <label><input id="codes" type="checkbox" checked> Resolve numeric codes via /reference</label>
   </div>
+  <div class="optrow">
+    <label><input id="swonly" type="checkbox"> Software only &mdash; keep candidates whose
+      record says software (EMDN&nbsp;Z12, or a special device type naming software)</label>
+  </div>
+  <p class="hint" id="swhint">Filters on what the record says the device is, not on words in
+  its name, so it removes hardware whatever you searched for. A device with no EMDN code and
+  no special device type counts as undetermined and is dropped too.</p>
 </details>
 
 <section class="mylist" id="mylist" hidden>
@@ -512,6 +586,22 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
   <div id="summary"></div>
 </section>
 
+<details class="panel" id="mfrpanel">
+  <summary><strong>Search by manufacturer</strong> &mdash; every device one company registered</summary>
+  <div class="row" style="margin-top:11px">
+    <input id="m_name" placeholder="Manufacturer name, e.g. GAIA AG"
+           aria-label="Manufacturer name" style="flex:1;min-width:220px">
+    <input id="m_srn" placeholder="or an SRN, e.g. DE-MF-000025123" aria-label="Manufacturer SRN">
+    <button id="m_go" type="button">Find devices</button>
+  </div>
+  <p class="hint"><code>/udi</code> cannot filter on a manufacturer <em>name</em> &mdash; only on
+  <code>MF_SRN</code>, the registration number. So the name is resolved through
+  <code>/actors</code> first, then each SRN is listed. The documented API matches the company
+  name exactly, so a short name like &ldquo;HelloBetter&rdquo; will not match
+  &ldquo;GET.ON Institut &hellip; GmbH&rdquo;; the substring fallback is tried when the exact
+  lookup finds no actor.</p>
+</details>
+
 <details class="panel" id="discpanel">
   <summary><strong>Discover by filter</strong> &mdash; find devices without knowing a name</summary>
   <div class="row" style="margin-top:11px">
@@ -524,7 +614,8 @@ border-top-color:transparent;border-radius:50%;animation:s .7s linear infinite;v
     <button id="d_go" type="button">Discover</button>
   </div>
   <p class="hint">Keywords are applied to the rows the API returns, not sent as a filter &mdash;
-  they narrow results rather than widening the search.</p>
+  they narrow results rather than widening the search. The <em>Software only</em> option under
+  Options applies here too, and is the better filter: it uses the record, not the wording.</p>
 </details>
 
 <div id="status"></div>
@@ -542,7 +633,7 @@ const FIELDS = [["Trade name","trade_name"],["Device name","device_name"],["Mode
 ["Special type","special_type"],["UDI-DI","primary_di"],["Secondary DI","secondary_di"],
 ["Basic UDI-DI","basic_udi"],["Authorised rep.","authorised_rep"],
 ["EMDN / nomenclature","nomenclature_code"],["Medical purpose","medical_purpose"],
-["Reference","reference"],["Version","version"]];
+["Reference","reference"],["Version","version"],["Device type","device_kind_reason"]];
 let TH = {found:0.85, possible:0.6};
 
 let DEVICES = [];
@@ -578,6 +669,8 @@ fetch("/api/devices").then(r => r.json()).then(d => {
     if (btn) runOne(DEVICES[+btn.dataset.i].name, btn);
   });
 }).catch(() => {});
+
+const dropCount = d => Object.values(d.dropped_kinds || {}).reduce((a, b) => a + b, 0);
 
 const cls = s => s >= TH.found ? "found" : s >= TH.possible ? "possible" : "none";
 const word = s => s >= TH.found ? "found" : s >= TH.possible ? "possible" : "not found";
@@ -622,6 +715,10 @@ function card(c, searched) {
   // match on the documented API, so say where it came from.
   const via = c.matched_via
     ? `<span class="chip via">found via substring</span>` : "";
+  const kind = c.device_kind && c.device_kind !== "software"
+    ? `<span class="chip mfr" title="${esc(c.device_kind_reason || "")}">${esc(c.device_kind)}</span>`
+    : (c.device_kind === "software"
+        ? `<span class="chip" title="${esc(c.device_kind_reason || "")}">software</span>` : "");
   const viaNote = c.matched_via
     ? `<div class="warnbox">Found through the EUDAMED website's substring search, not by
        an exact match on the documented API. Undocumented backend &mdash; confirm this
@@ -629,15 +726,20 @@ function card(c, searched) {
   return `<div class="card"><h3>${c.link
       ? `<a href="${esc(c.link)}" target="_blank" rel="noopener">${title}</a>` : title}
     <span class="chip score">${c.score}</span>
-    <span class="chip${isMfr ? " mfr" : ""}">${esc(c.matched_on)}</span>${via}</h3>
+    <span class="chip${isMfr ? " mfr" : ""}">${esc(c.matched_on)}</span>${via}${kind}</h3>
     ${warn}${viaNote}<dl>${rows}</dl></div>`;
 }
 
 function render(d) {
   const best = d.candidates[0];
   const isError = d.status === "error";
+  // "not found" would be wrong when the register did return rows and the
+  // device-type filter removed them, so that case gets its own word.
+  const filteredOut = !best && !isError && dropCount(d) > 0;
+  const verdict = isError ? "could not check"
+    : best ? word(best.score) : filteredOut ? "filtered out" : "not found";
   let html = `<p class="verdict ${isError ? "error" : best ? cls(best.score) : "none"}">`
-    + `${isError ? "could not check" : best ? word(best.score) : "not found"}</p>`;
+    + `${verdict}</p>`;
 
   if (isError) {
     // Every request failed, so registration is unknown - not absent.
@@ -645,6 +747,15 @@ function render(d) {
       failed, so the register was never consulted and this device's registration is
       <em>unknown</em>. ${explain(d.errors)}
       <ul>${(d.errors || []).map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul></div>`;
+  } else if (!d.candidates.length && dropCount(d)) {
+    // The register DID return rows; the device-type filter removed them. Saying
+    // "not found" here would assert something the search never established.
+    const k = d.dropped_kinds || {};
+    html += `<div class="errbox"><strong>Found, then filtered out.</strong>
+      ${dropCount(d)} candidate(s) matched the name but were dropped by
+      <em>Software only</em>: ${k.other || 0} whose record says they are not software, and
+      ${k.unknown || 0} whose record says nothing either way. This is <em>not</em>
+      &ldquo;not registered&rdquo; &mdash; clear the option under Options to see them.</div>`;
   } else if (!d.candidates.length) {
     html += `<p class="sub">No candidate scored above the minimum.</p>`;
     html += HEALTH.widen
@@ -679,13 +790,14 @@ function render(d) {
 function currentOpts() {
   const fields = [...document.querySelectorAll(".fld:checked")].map(c => c.value);
   return { fields, top: $("top").value, min: $("min").value,
-           codes: $("codes").checked ? "1" : "0" };
+           codes: $("codes").checked ? "1" : "0",
+           software_only: $("swonly").checked ? "1" : "0" };
 }
 
 async function query({ name, target }) {
   const o = currentOpts();
   const params = { fields: o.fields.join(","), top: o.top, min_score: o.min,
-                   codes: o.codes };
+                   codes: o.codes, software_only: o.software_only };
   if (target) params.target = target; else params.country = $("country").value;
   if (name) params.name = name;
   const r = await fetch("/api/search?" + new URLSearchParams(params));
@@ -773,7 +885,8 @@ function renderSummary() {
 function showDownloads({ target, name, all }) {
   const o = currentOpts();
   const base = p => "/api/report?" + new URLSearchParams({
-    ...p, fields: o.fields.join(","), top: o.top, min_score: o.min, codes: o.codes });
+    ...p, fields: o.fields.join(","), top: o.top, min_score: o.min, codes: o.codes,
+    software_only: o.software_only });
   const q = all ? { all: "1" } : (target ? { target } : { name });
   const label = all ? `all ${DEVICES.length} device(s)` : esc(target || name);
   $("dl").hidden = false;
@@ -804,6 +917,7 @@ $("d_go").addEventListener("click", async () => {
     risk_class_id: $("d_class").value, nomenclature: $("d_emdn").value.trim(),
     medical_purpose: $("d_purpose").value.trim(), keyword: $("d_keyword").value.trim(),
     codes: $("codes").checked ? "1" : "0",
+    software_only: $("swonly").checked ? "1" : "0",
   };
   if (!params.risk_class_id && !params.nomenclature && !params.medical_purpose) {
     $("status").className = "err";
@@ -823,6 +937,7 @@ $("d_go").addEventListener("click", async () => {
     let html = `<p class="verdict found">${d.kept} device(s)</p>`;
     html += `<p class="sub">Filters: ${esc(JSON.stringify(d.filters))}`
       + (d.keyword.length ? ` &middot; narrowed locally by ${esc(d.keyword.join(", "))}` : "")
+      + (d.software_only ? ` &middot; software only, dropped ${dropCount(d)} row(s)` : "")
       + ` &middot; ${d.rows_returned} row(s) returned by the API</p>`;
     if (d.truncated)
       html += `<div class="errbox"><strong>Truncated.</strong> The API returned exactly 1000
@@ -834,6 +949,57 @@ $("d_go").addEventListener("click", async () => {
     $("status").textContent = err.message;
   } finally {
     $("d_go").disabled = false;
+  }
+});
+
+/* Manufacturer -> SRN -> devices. The two-step lookup lives on the server;
+   this only renders it. */
+$("m_go").addEventListener("click", async () => {
+  const name = $("m_name").value.trim(), srn = $("m_srn").value.trim();
+  if (!name && !srn) {
+    $("status").className = "err";
+    $("status").textContent = "Give a manufacturer name or an SRN.";
+    return;
+  }
+  $("m_go").disabled = true;
+  $("status").className = "";
+  $("status").innerHTML = `<span class="spin"></span> looking up
+    ${esc(name || srn)}&hellip;`;
+  $("out").innerHTML = ""; $("summary").innerHTML = ""; $("dl").hidden = true;
+  try {
+    const r = await fetch("/api/manufacturer?" + new URLSearchParams({
+      name, srn, codes: $("codes").checked ? "1" : "0",
+      software_only: $("swonly").checked ? "1" : "0", top: $("top").value }));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || "request failed");
+    $("status").textContent = "";
+    let html = `<p class="verdict ${d.devices.length ? "found" : "none"}">`
+      + `${d.device_count} device(s)</p>`;
+    if (d.actors.length) {
+      html += `<table class="sum"><thead><tr><th>SRN</th><th>Actor</th><th>Type</th>`
+        + `<th>Country</th><th>Found</th></tr></thead><tbody>`
+        + d.actors.map(a => `<tr><td><code>${esc(a.actor_id)}</code></td>
+            <td>${esc(a.name)}</td><td>${esc(a.actor_type)}</td><td>${esc(a.country)}</td>
+            <td>${a.matched_via ? `<span class="chip via">substring</span>`
+                                : `<span class="chip">exact</span>`}</td></tr>`).join("")
+        + `</tbody></table>`;
+    } else if (!d.srns.length) {
+      html += `<div class="errbox"><strong>No actor matched that name.</strong>
+        <code>/actors</code> matches the name exactly on the documented API, so try the full
+        registered company name &mdash; or look the manufacturer up on the EUDAMED website and
+        paste its SRN into the second box.</div>`;
+    }
+    if (d.software_only && dropCount(d))
+      html += `<div class="banner">Software only dropped ${dropCount(d)} of this
+        manufacturer's devices: ${d.dropped_kinds.other || 0} the record calls something other
+        than software, ${d.dropped_kinds.unknown || 0} it says nothing about.</div>`;
+    html += d.devices.map(c => card(c, d.query)).join("");
+    $("out").innerHTML = html;
+  } catch (err) {
+    $("status").className = "err";
+    $("status").textContent = err.message;
+  } finally {
+    $("m_go").disabled = false;
   }
 });
 
