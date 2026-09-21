@@ -1,0 +1,247 @@
+openapi: 3.0.1
+info:
+  title: API - EUDAMED Public
+  description: "EUDAMED is the IT system established by Regulation (EU) 2017/745 on medical devices and Regulation (EU) 2017/746 on in vitro diagnosis medical devices. EUDAMED provides a living picture of the lifecycle of medical devices that are made available in the European Union (EU) and aims to enhance overall transparency, including better access to information for public and healthcare professionals, and to enhance coordination between the different Member States in the EU.\n\n"
+  version: v1.0
+servers:
+  - url: https://api.datalake.sante.service.ec.europa.eu/eudamed
+paths:
+  /actors:
+    get:
+      tags:
+        - hidden-configportal
+        - hidden-public
+      summary: actors
+      operationId: 411c8f92-26fa-4451-9377-7a13b5d17915
+      parameters:
+        - name: ACTOR_ID
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: NAME
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: ABBREVIATED_NAME
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: ACTOR_TYPE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: CA_NAME
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: CA_ACTOR_ID
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: ACT_COUNTRY_ISO2_CODE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: Type of the response json|csv
+          required: true
+          schema:
+            enum:
+              - json
+              - csv
+            type: string
+        - name: Content-Type
+          in: header
+          description: ''
+          required: true
+          schema:
+            type: string
+            default: application/json
+      responses:
+        '200':
+          description: ''
+        '500':
+          description: Generate a fitting description for the response
+          content:
+            application/json:
+              examples:
+                '500':
+                  summary: Generate a fitting summary for the response
+                  description: Generate a fitting description for the response
+                  value:
+                    Error: An internal server error has occured.
+  /reference:
+    get:
+      tags:
+        - hidden-configportal
+        - hidden-public
+      summary: reference
+      operationId: a12dcf24-cf41-4266-8699-048e6fc30ccd
+      parameters:
+        - name: ID
+          in: query
+          description: ''
+          schema:
+            type: number
+        - name: CODE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: LANGUAGE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: Type of the response csv|json
+          required: true
+          schema:
+            enum:
+              - csv
+              - json
+            type: string
+        - name: Content-Type
+          in: header
+          description: ''
+          required: true
+          schema:
+            type: string
+            default: application/json
+      responses:
+        '200':
+          description: ''
+        '500':
+          description: Generate a fitting description for the response
+          content:
+            application/json:
+              examples:
+                '500':
+                  summary: Generate a fitting summary for the response
+                  description: Generate a fitting description for the response
+                  value:
+                    Error: An internal server error has occured.
+  /udi:
+    get:
+      tags:
+        - hidden-configportal
+        - hidden-public
+      summary: udi
+      operationId: 8da4a0c0-0478-4d13-9f9c-1504fd48439c
+      parameters:
+        - name: PRIMARY_DI
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: BASIC_UDI
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: TRADE_NAME
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: DEVICE_NAME
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: DEVICE_MODEL
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: REFERENCE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: NOMENCLATURE_CODE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: RISK_CLASS_ID
+          in: query
+          description: ''
+          schema:
+            type: number
+        - name: APPLICABLE_LEGISLATION_ID
+          in: query
+          description: ''
+          schema:
+            type: number
+        - name: PLACED_ON_THE_MARKET_ID
+          in: query
+          description: ''
+          schema:
+            type: number
+        - name: MF_SRN
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: SPECIAL_DEVICE_TYPE_ID
+          in: query
+          description: ''
+          schema:
+            type: number
+        - name: MEDICAL_PURPOSE
+          in: query
+          description: ''
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: Type of the response csv|json
+          required: true
+          schema:
+            enum:
+              - csv
+              - json
+            type: string
+        - name: Content-Type
+          in: header
+          description: ''
+          required: true
+          schema:
+            type: string
+            default: application/json
+      responses:
+        '200':
+          description: ''
+        '500':
+          description: Generate a fitting description for the response
+          content:
+            application/json:
+              examples:
+                '500':
+                  summary: Generate a fitting summary for the response
+                  description: Generate a fitting description for the response
+                  value:
+                    Error: An internal server error has occured.
+components:
+  securitySchemes:
+    apiKeyHeader:
+      type: apiKey
+      name: Ocp-Apim-Subscription-Key
+      in: header
+    apiKeyQuery:
+      type: apiKey
+      name: subscription-key
+      in: query
+security:
+  - apiKeyHeader: [ ]
+  - apiKeyQuery: [ ]

@@ -404,6 +404,10 @@ function explain(errors) {
       network or DNS.`;
   if (/timed out|timeout/i.test(all))
     return `The API did not respond in time. Try again, or raise <code>--timeout</code>.`;
+  if (/Tunnel connection failed|proxy/i.test(all))
+    return `A proxy between this machine and the API refused the connection. That is the proxy
+      rejecting it, <em>not</em> the API rejecting a key \u2014 check your network or
+      <code>HTTPS_PROXY</code> settings.`;
   if (/\b40[13]\b|subscription key/i.test(all))
     return `The subscription key was rejected. Restart with a valid <code>--key</code>, or try
       <code>--auth-mode query</code>.`;

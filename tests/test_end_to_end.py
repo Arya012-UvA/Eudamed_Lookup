@@ -354,3 +354,84 @@ def test_ui_reports_error_not_not_found_when_backend_is_down(live_server):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# --- attempting without a key -------------------------------------------
+def test_no_key_is_refused_by_default(tmp_path, capsys, monkeypatch):
+    """Without a key and without --no-key, fail fast rather than 401 per device."""
+    monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
+    assert main(["search", "--trade-name", "MindDoc",
+                 "--out", str(tmp_path / "r")]) == EXIT_AUTH
+    err = capsys.readouterr().err
+    assert "--no-key" in err          # the opt-out must be discoverable
+
+
+def test_no_key_attempts_the_request_and_reports_the_verdict(
+        live_server, tmp_path, capsys, monkeypatch):
+    """--no-key must actually issue the call. The spec declares a key required,
+    but an APIM export carries that block whether or not the product enforces
+    a subscription, so refusing to try makes the question unanswerable.
+
+    The stand-in does enforce a key, so the answer here is a clean 401 - which
+    is the informative outcome: a key really is needed.
+    """
+    monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
+    code = main(["search", "--base", live_server, "--no-key", "--trade-name", "MindDoc",
+                 "--out", str(tmp_path / "r"), "--delay", "0", "--retries", "1",
+                 "--no-resolve-codes"])
+    assert code == EXIT_AUTH
+    err = capsys.readouterr().err
+    assert "trying anyway" in err
+    assert "401" in err and config_key_env() in err
+
+
+def config_key_env():
+    from eudamed import config
+    return config.KEY_ENV
+
+
+def test_no_key_succeeds_against_an_open_api(tmp_path, capsys, monkeypatch):
+    """If the product does NOT enforce a subscription, --no-key just works.
+    Verified against the stand-in started with require_key disabled."""
+    import threading
+
+    from eudamed import fakeserver
+    monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
+    server = fakeserver.serve(port=0, require_key=False)
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                     daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        out = tmp_path / "r"
+        code = main(["search", "--base", f"http://{host}:{port}/eudamed", "--no-key",
+                     "--trade-name", "MindDoc", "--out", str(out),
+                     "--delay", "0", "--retries", "1"])
+        assert code == EXIT_OK
+        result = json.loads((out / "results.json").read_text())["results"][0]
+        assert result["status"] == "found"
+        assert result["candidates"][0]["trade_name"] == "MindDoc"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_no_key_sends_no_credential(monkeypatch, capsys):
+    monkeypatch.delenv("EUDAMED_SUBSCRIPTION_KEY", raising=False)
+    main(["search", "--trade-name", "MindDoc", "--no-key", "--dry-run"])
+    url = capsys.readouterr().out
+    assert "subscription-key" not in url and "TRADE_NAME=MindDoc" in url
+
+
+def test_proxy_refusal_is_distinguished_from_an_api_rejection(client_factory):
+    """A proxy CONNECT refusal reads like a 403 from the API but is not one."""
+    import urllib.error
+
+    from eudamed.client import ApiError
+
+    def opener(req, timeout=None):
+        raise urllib.error.URLError("Tunnel connection failed: 403 Forbidden")
+
+    with pytest.raises(ApiError) as exc:
+        client_factory(opener=opener, retries=1).udi(TRADE_NAME="x")
+    assert "proxy refusing the connection" in str(exc.value)
+    assert "not the API rejecting" in str(exc.value)

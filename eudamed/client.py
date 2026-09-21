@@ -144,9 +144,14 @@ class Client:
             except (urllib.error.URLError, TimeoutError, ConnectionError,
                     json.JSONDecodeError, csv.Error, UnicodeDecodeError) as exc:
                 last = exc
+        hint = ""
+        if "Tunnel connection failed" in str(last) or "proxy" in str(last).lower():
+            # A proxy CONNECT refusal reads like an API rejection but is not one.
+            hint = (" (this is a proxy refusing the connection, not the API rejecting "
+                    "a key - check your network or HTTPS_PROXY)")
         raise ApiError(
             f"{safe_url} failed after {self.retries} attempt(s): "
-            f"{type(last).__name__}: {last}",
+            f"{type(last).__name__}: {last}{hint}",
             url=safe_url, status=getattr(last, "code", None), cause=last)
 
     def _parse(self, body, safe_url):

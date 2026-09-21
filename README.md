@@ -47,6 +47,29 @@ export EUDAMED_SUBSCRIPTION_KEY=your-key-here
 
 Keys are never printed: they are redacted to `<key>` in all log and error output.
 
+### Do you actually need one?
+
+The OpenAPI document says yes, but that is weaker evidence than it looks. It is
+an Azure APIM export, and APIM emits this `security` block according to how the
+*portal* is configured — which is not the same as whether the product enforces a
+subscription at the gateway. Only a live call settles it, so `--no-key` issues
+the request without a credential:
+
+```bash
+python3 -m eudamed probe --trade-name MindDoc --no-key -v
+```
+
+| Response | Meaning |
+| --- | --- |
+| `200` with rows | The API is open. No key needed; carry on without one |
+| `401` / `403` | A key really is enforced. Get one from the portal |
+| `404` | Wrong path — check `--base` ends in `/eudamed` |
+| `Tunnel connection failed` / proxy error | A proxy on your network refused it. **Not** the API rejecting a key |
+
+That last row matters: a proxy `CONNECT` refusal surfaces as `403` and reads
+like an authentication failure. Both the CLI and the web UI now say explicitly
+when a failure came from a proxy rather than from the API.
+
 ## Commands
 
 ### `probe` — run this first
@@ -167,6 +190,7 @@ MindDoc,Software for psychological diseases,Bavaria DE,DE,MindDoc,DE-MF-00002512
 | `--format` | `json` | `json` or `csv` — the API supports both |
 | `--auth-mode` | `header` | Where to put the subscription key |
 | `--no-resolve-codes` | off | Skip the `/reference` call that turns numeric ids into codes |
+| `--no-key` | off | Issue the request with no credential, to test whether one is enforced |
 | `--dry-run` | off | Print the URLs that would be requested, then exit. Needs no key |
 | `--delay` | `0.2` | Minimum seconds between requests |
 | `--retries` | `4` | Attempts per request, with exponential backoff |
@@ -246,7 +270,7 @@ EUDAMED link before relying on a match.
 ### 1. The offline suite — no key, no network
 
 ```bash
-pytest -q          # 172 tests
+pytest -q          # 177 tests
 ruff check eudamed tests
 ```
 
@@ -366,8 +390,8 @@ eudamed/
   cli.py          argparse CLI: search, actors, reference, probe, serve
   webui.py        local web UI: search box, server-side key, JSON endpoints
   fakeserver.py   local stand-in for testing without a key
-tests/            172 tests, no network required
-docs/             vendored OpenAPI document
+tests/            177 tests, no network required
+docs/             vendored OpenAPI document (JSON and YAML; same document)
 legacy/           the original UI-backend script (see legacy/README.md)
 ```
 

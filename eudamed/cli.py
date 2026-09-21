@@ -39,6 +39,10 @@ def add_common(parser):
     conn.add_argument("--retries", type=int, default=4,
                       help="attempts per request, with exponential backoff (default 4)")
     conn.add_argument("--timeout", type=float, default=60)
+    conn.add_argument("--no-key", dest="require_key", action="store_false",
+                      help="attempt the request without a subscription key. The spec declares "
+                           "one is required, but an APIM export says that whether or not the "
+                           "product actually enforces a subscription, so this lets you find out")
     conn.add_argument("--dry-run", action="store_true",
                       help="print the URLs that would be requested, then exit")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -51,16 +55,25 @@ def make_client(args):
 
 
 def require_key(client, args):
-    """Fail early and clearly rather than after a 401 per device."""
+    """Fail early and clearly rather than after a 401 per device.
+
+    --no-key opts out: the OpenAPI document declares a subscription key as
+    required, but an Azure APIM export carries that security block whether or
+    not the product actually enforces a subscription. Only a live call settles
+    it, so refusing to try would make the question unanswerable.
+    """
     if client.key or args.dry_run:
         return True
-    log("No subscription key. The EUDAMED Public API requires one "
+    if not getattr(args, "require_key", True):
+        log("No subscription key - trying anyway (--no-key).")
+        log("  A 401/403 means a key really is required; a 200 means the API is open.")
+        return True
+    log("No subscription key. The EUDAMED Public API's OpenAPI document declares one "
         f"(--key, or export {config.KEY_ENV}=...).")
-    log("Get one from https://developer.datalake.sante.service.ec.europa.eu, or test "
-        "locally against the bundled stand-in:")
-    log("  python3 -m eudamed.fakeserver")
-    log("  python3 -m eudamed search --base http://127.0.0.1:8099/eudamed --key dummy "
-        "--trade-name MindDoc")
+    log("Options:")
+    log("  --no-key   attempt the call anyway and find out whether it is actually enforced")
+    log("  get a key at https://developer.datalake.sante.service.ec.europa.eu")
+    log("  or test locally: python3 -m eudamed.fakeserver")
     return False
 
 
